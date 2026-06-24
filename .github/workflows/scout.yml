@@ -1,0 +1,65 @@
+# Put this file at:  .github/workflows/scout.yml
+# It runs the scout on a schedule in the cloud (free), with no machine of yours on.
+name: gold-scout
+
+on:
+  schedule:
+    - cron: "*/30 13-23 * * *"   # every 30 min, ~US daytime (cron is UTC). Tweak freely.
+  workflow_dispatch:              # also lets you press "Run" manually anytime
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests
+      - name: Restore alert memory
+        uses: actions/cache@v4
+        with:
+          path: seen_ids.json
+          key: seen-${{ github.run_id }}
+          restore-keys: |
+            seen-
+      - name: Fetch and score listings
+        env:
+          EBAY_CLIENT_ID: ${{ secrets.EBAY_CLIENT_ID }}
+          EBAY_CLIENT_SECRET: ${{ secrets.EBAY_CLIENT_SECRET }}
+          # instant phone alerts (free): set this to your private ntfy topic
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          ALERT_MIN_SCORE: "70"
+          # optional email-to-self: add these as repo secrets to turn it on
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+        run: python3 gold_scout.py
+      - name: Assemble site
+        run: |
+          mkdir -p site
+          cp index.html site/
+          cp results.json site/
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
