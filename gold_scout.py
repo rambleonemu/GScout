@@ -2,37 +2,35 @@
 """
 gold_scout.py  --  the engine
 
-Fetches the live gold price, pulls eBay gold listings, throws out anything that
-is not solid gold (plated, filled, or set with gems/stones), keeps only listings
-that cost LESS PER GRAM than today's price, scores each one, and writes
-results.json for the dashboard to display. Also writes CSVs you can open in Excel.
+Fetches the live gold price, pulls US-only eBay gold listings, keeps only solid
+gold (no plating, no gems, no silver/other metals) priced under today's price,
+reads descriptions to recover missing weights, filters weak sellers and fake
+bars, scores each deal, logs run history for the charts, and writes results.json
++ history.json for the dashboard. Pushes phone alerts on strong new listings.
 
-Setup (one time)
-  1. eBay developer account at developer.ebay.com -> create a production keyset
-  2. Copy the App ID (Client ID) and Cert ID (Secret)
-  3. pip install requests
-  4. Set your keys, then run:
-       export EBAY_CLIENT_ID=...   EBAY_CLIENT_SECRET=...
-       python3 gold_scout.py
-  Put it on a cron line to refresh automatically. Run from a US IP (your home
-  server over Tailscale) so listings and shipping match a US buyer.
+Two modes (set by the SCOUT_MODE env var):
+  full  (default) - full sweep, deep description scan, page + history + alerts
+  fast            - quick pass over priority categories, alerts only
 
-The gold price is pulled live from gold-api.com (free, no key). "Today's price"
-per gram = spot / 31.1035 x karat purity, which is what a Gold Price page shows.
+No extra eBay keys needed beyond your App ID + Cert ID.
 """
 
 import os, re, csv, time, json, base64, smtplib, requests
+import html as _html
 from datetime import datetime, timezone
 from email.message import EmailMessage
 
 CLIENT_ID     = os.environ.get("EBAY_CLIENT_ID", "PASTE_APP_ID")
 CLIENT_SECRET = os.environ.get("EBAY_CLIENT_SECRET", "PASTE_CERT_ID")
+SCOUT_MODE    = os.environ.get("SCOUT_MODE", "full")   # "full" or "fast"
 
 CONFIG = {
     "payout_pct":     1.00,   # your buyer pays the full listed gold price (100% of melt)
     "trap_under_pct": 0.50,   # more than this far under price = likely fake/misweighed -> hidden
     "tax_pct":        0.0,    # sales tax you pay buying on eBay
     "max_price":      2000,
+    "min_feedback_pct":   96.0,  # skip sellers below this positive-feedback %
+    "min_feedback_score": 10,    # skip brand-new sellers below this many ratings
     "queries": [
         # every kind of gold item, per karat. "grams" biases toward listings
         # that state a weight, which we need to price them.
@@ -47,25 +45,33 @@ CONFIG = {
         "18k gold earrings grams",
         "22k gold scrap grams", "22k gold chain grams", "22k gold bracelet grams",
         "24k gold scrap grams", "solid gold scrap lot grams",
+        # European-marked pieces (585=14k, 750=18k, 417=10k, 916=22k)
+        "585 gold grams", "750 gold grams", "417 gold grams",
+    ],
+    # priority categories scanned in fast mode, newest-first
+    "fast_queries": [
+        "14k gold scrap grams", "10k gold scrap grams",
+        "18k gold scrap grams", "14k gold chain grams",
     ],
     "results_per_query": 75,
-    "json_out":  "results.json",
-    "deals_csv": "gold_candidates.csv",
-    "traps_csv": "gold_traps.csv",
+    "deep_scan":        True,
+    "max_detail_calls": 35,   # hard cap per run, protects your daily eBay quota
+    "json_out":   "results.json",
+    "deals_csv":  "gold_candidates.csv",
+    "traps_csv":  "gold_traps.csv",
+    "history_file": "history.json",
+    "history_max":  2000,     # keep roughly the last few weeks of runs
 }
 
-# optional email-to-self; leave EMAIL_TO empty to skip
 EMAIL = {
     "to": os.environ.get("EMAIL_TO", ""), "from": os.environ.get("EMAIL_FROM", ""),
     "smtp_host": os.environ.get("SMTP_HOST", "smtp.gmail.com"),
     "smtp_port": int(os.environ.get("SMTP_PORT", "465")),
     "smtp_user": os.environ.get("SMTP_USER", ""),
-    "smtp_pass": os.environ.get("SMTP_PASS", ""),  # use an app password, never your real one
-    "min_score": 60,                               # email deals scoring at/above this
+    "smtp_pass": os.environ.get("SMTP_PASS", ""),
+    "min_score": 60,
 }
 
-# instant phone push via ntfy.sh (free, no account). Subscribe to your topic in
-# the ntfy app, then set NTFY_TOPIC. Leave empty to skip.
 ALERT = {
     "ntfy_topic": os.environ.get("NTFY_TOPIC", ""),
     "min_score":  int(os.environ.get("ALERT_MIN_SCORE", "70")),
@@ -75,39 +81,60 @@ ALERT = {
 PURITY = {10: 10/24, 14: 14/24, 18: 18/24, 22: 22/24, 24: 0.999}
 TROY = 31.1035
 
-# Not solid gold: plated, filled, bonded, tone, vermeil, over silver.
 NOT_SOLID = re.compile(
     r"\b(gold[\s-]?filled|gold[\s-]?plat(e|ed|ing)|g\.?f\.?\b|g\.?p\.?\b|"
     r"gold[\s-]?tone|gold[\s-]?color|plated|rolled\s?gold|vermeil|overlay|"
     r"hge|electroplate|bonded|over\s?sterling|over\s?silver|costume|fashion)\b", re.I)
-# Has gems/stones (these add weight and cannot be scrapped). "Diamond cut" is a
-# finish, not a stone, so it is removed before this test.
 HAS_STONE = re.compile(
     r"\b(diamond|gemstone|gem|stone|stones|cz|cubic\s?zirconia|sapphire|ruby|"
     r"emerald|pearl|opal|topaz|amethyst|garnet|turquoise|jade|onyx|moissanite|"
     r"rhinestone|crystal|birthstone|set\s?with)\b", re.I)
-# Contains a non-gold metal. Mixed pieces (gold + silver/platinum/steel) wreck
-# the per-gram math because part of the weight is not gold.
 NON_GOLD = re.compile(
     r"\b(silver|sterling|925|platinum|palladium|titanium|stainless|steel|"
     r"brass|copper|pewter|tungsten|bronze|nickel)\b", re.I)
+BAR_RE = re.compile(r"\b(bar|bullion|ingot)\b", re.I)
 KARAT_RE = re.compile(r"\b(10|14|18|22|24)\s?k(?:t|arat)?\b", re.I)
+FINENESS = {"417": 10, "585": 14, "750": 18, "916": 22, "990": 24, "999": 24}
+FINENESS_RE = re.compile(r"(?<![\d$.])(417|585|750|916|990|999)(?![\d])")
 GRAM_RE  = re.compile(r"(\d+(?:\.\d+)?)\s?(?:g\b|gr\b|gram|grams)", re.I)
+DWT_RE   = re.compile(r"(\d+(?:\.\d+)?)\s?(?:dwt|pennyweight|penny\s?weight)\b", re.I)
+DWT_TO_G = 1.55517
 
 
-def live_spot_per_oz():
-    r = requests.get("https://api.gold-api.com/price/XAU", timeout=20)
-    r.raise_for_status()
-    return float(r.json()["price"])
+def karat_from_text(text):
+    """Read karat from a 10k/14k stamp, or fall back to a European fineness number."""
+    m = KARAT_RE.search(text or "")
+    if m:
+        return int(m.group(1))
+    m = FINENESS_RE.search(text or "")
+    if m:
+        return FINENESS[m.group(1)]
+    return None
 
 
-def is_solid_no_stones(title):
-    if NOT_SOLID.search(title):
+def extract_grams(text):
+    """Weight in grams from text. Tries grams, then pennyweight (dwt)."""
+    if not text:
+        return None
+    m = GRAM_RE.search(text)
+    if m:
+        return float(m.group(1))
+    m = DWT_RE.search(text)
+    if m:
+        return round(float(m.group(1)) * DWT_TO_G, 2)
+    return None
+
+
+def strip_html(s):
+    return _html.unescape(re.sub(r"<[^>]+>", " ", s or ""))
+
+
+def is_solid_no_stones(text):
+    if NOT_SOLID.search(text):
         return False
-    if NON_GOLD.search(title):          # silver, platinum, steel, etc. -> mixed metal
+    if NON_GOLD.search(text):
         return False
-    cleaned = re.sub(r"diamond[\s-]?cut", "", title, flags=re.I)  # finish, not a stone
-    # drop negations so "no stones" / "without gems" are not read as having them
+    cleaned = re.sub(r"diamond[\s-]?cut", "", text, flags=re.I)
     cleaned = re.sub(r"\b(no|without|free\s?of|minus)\s+(stone|stones|gem|gems|"
                      r"gemstone|gemstones|diamond|diamonds)\b", "", cleaned, flags=re.I)
     cleaned = re.sub(r"\b(stone|gem|diamond)[\s-]?free\b", "", cleaned, flags=re.I)
@@ -116,8 +143,21 @@ def is_solid_no_stones(title):
     return True
 
 
+def seller_ok(item, cfg):
+    s = item.get("seller") or {}
+    try:
+        pct = s.get("feedbackPercentage")
+        if pct is not None and float(pct) < cfg["min_feedback_pct"]:
+            return False
+        score = s.get("feedbackScore")
+        if score is not None and int(score) < cfg["min_feedback_score"]:
+            return False
+    except (TypeError, ValueError):
+        pass
+    return True
+
+
 def deal_score(under_by, payout_pct, trap_under):
-    """0-100. 0 at break-even (buying = refiner payout), 100 just below the trap line."""
     be = 1 - payout_pct
     if trap_under <= be:
         return 0
@@ -136,7 +176,7 @@ def get_token():
     return r.json()["access_token"]
 
 
-def search(token, query, limit):
+def search(token, query, limit, sort="price"):
     out, offset = [], 0
     headers = {"Authorization": f"Bearer {token}", "X-EBAY-C-MARKETPLACE-ID": "EBAY_US"}
     while offset < limit:
@@ -144,8 +184,9 @@ def search(token, query, limit):
         r = requests.get("https://api.ebay.com/buy/browse/v1/item_summary/search",
             headers=headers,
             params={"q": query,
-                    "filter": "buyingOptions:{FIXED_PRICE},conditions:{USED|UNSPECIFIED}",
-                    "sort": "price", "limit": page, "offset": offset}, timeout=30)
+                    "filter": "buyingOptions:{FIXED_PRICE},conditions:{USED|UNSPECIFIED},"
+                              "itemLocationCountry:US",
+                    "sort": sort, "limit": page, "offset": offset}, timeout=30)
         if r.status_code != 200:
             print(f"  ! {query!r} -> HTTP {r.status_code}: {r.text[:120]}"); break
         items = r.json().get("itemSummaries", []) or []
@@ -156,43 +197,103 @@ def search(token, query, limit):
     return out
 
 
-def evaluate(item, spot24, cfg):
-    title = item.get("title", "")
-    if not is_solid_no_stones(title):
-        return None
-    km, gm = KARAT_RE.search(title), GRAM_RE.search(title)
-    if not km or not gm:
-        return None
-    karat = int(km.group(1)); grams = float(gm.group(1))
-    price = float((item.get("price") or {}).get("value", 0) or 0)
-    if price <= 0 or grams <= 0 or price > cfg["max_price"]:
+def get_item_detail(token, item_id):
+    try:
+        r = requests.get(f"https://api.ebay.com/buy/browse/v1/item/{item_id}",
+            headers={"Authorization": f"Bearer {token}",
+                     "X-EBAY-C-MARKETPLACE-ID": "EBAY_US"}, timeout=20)
+        if r.status_code == 429:
+            return "RATELIMIT"
+        if r.status_code != 200:
+            return None
+        return r.json()
+    except Exception:
         return None
 
-    ship = 0.0
+
+def _ship_cost(item):
     for opt in item.get("shippingOptions", []) or []:
         c = (opt.get("shippingCost") or {}).get("value")
         if c is not None:
-            ship = float(c); break
+            return float(c)
+    return 0.0
 
+
+def evaluate_core(item, karat, grams, spot24, cfg, title_text=None):
+    if not seller_ok(item, cfg):
+        return None
+    price = float((item.get("price") or {}).get("value", 0) or 0)
+    if price <= 0 or grams <= 0 or price > cfg["max_price"]:
+        return None
+    ship = _ship_cost(item)
     page_per_g = PURITY[karat] * spot24
     cost = (price + ship) * (1 + cfg["tax_pct"])
     all_in_g = cost / grams
-    if all_in_g >= page_per_g:                 # not cheaper per gram than today's price
+    if all_in_g >= page_per_g:
         return None
-
     under_by = (page_per_g - all_in_g) / page_per_g
+
+    title = title_text or item.get("title", "")
     is_trap = under_by >= cfg["trap_under_pct"]
+    if karat == 24 and BAR_RE.search(title):    # 24k "bullion" under melt is almost always fake
+        is_trap = True
+
     payout = page_per_g * grams * cfg["payout_pct"]
+    seller = item.get("seller") or {}
     return {
         "score": deal_score(under_by, cfg["payout_pct"], cfg["trap_under_pct"]),
         "under_pct": round(under_by * 100, 1),
         "trap": is_trap,
+        "offer": "BEST_OFFER" in (item.get("buyingOptions") or []),
+        "seller_pct": float(seller["feedbackPercentage"]) if seller.get("feedbackPercentage") else None,
         "id": item.get("itemId", ""),
         "karat": f"{karat}K", "grams": grams, "price": round(price, 2), "ship": round(ship, 2),
         "all_in_per_g": round(all_in_g, 2), "page_per_g": round(page_per_g, 2),
         "profit": round(payout - cost, 2),
         "title": title[:110], "url": item.get("itemWebUrl", ""),
     }
+
+
+def evaluate(item, spot24, cfg):
+    title = item.get("title", "")
+    if not is_solid_no_stones(title):
+        return None
+    karat = karat_from_text(title)
+    grams = extract_grams(title)
+    if not karat or not grams:
+        return None
+    return evaluate_core(item, karat, grams, spot24, cfg)
+
+
+def needs_description(item, cfg):
+    title = item.get("title", "")
+    if not is_solid_no_stones(title):
+        return False
+    if not karat_from_text(title):
+        return False
+    if extract_grams(title):
+        return False
+    price = float((item.get("price") or {}).get("value", 0) or 0)
+    return 0 < price <= cfg["max_price"]
+
+
+def evaluate_deep(item, detail, spot24, cfg):
+    title = item.get("title", "")
+    desc = strip_html(detail.get("description", ""))
+    aspects = " ".join(
+        f"{a.get('name','')}: {' '.join(a.get('values', []))}"
+        for a in (detail.get("localizedAspects") or [])
+    )
+    blob = f"{title} {aspects} {desc}"
+    if not is_solid_no_stones(blob):
+        return None
+    karat = karat_from_text(title) or karat_from_text(aspects)
+    if not karat:
+        return None
+    grams = extract_grams(aspects) or extract_grams(desc)
+    if not grams:
+        return None
+    return evaluate_core(item, karat, grams, spot24, cfg, title_text=title)
 
 
 def load_seen(path):
@@ -212,7 +313,6 @@ def save_seen(path, seen):
 
 
 def send_alerts(deals):
-    """Push only NEW listings scoring high enough, so you are not pinged twice."""
     topic = ALERT["ntfy_topic"]
     if not topic:
         return
@@ -236,7 +336,7 @@ def send_alerts(deals):
     save_seen(ALERT["seen_file"], seen)
 
 
-def send_email(deals, prices):
+def send_email(deals):
     if not EMAIL["to"] or not EMAIL["smtp_user"]:
         return
     keep = [d for d in deals if d["score"] >= EMAIL["min_score"]]
@@ -255,6 +355,66 @@ def send_email(deals, prices):
     print(f"emailed {len(keep)} deals to {EMAIL['to']}")
 
 
+def append_history(cfg, spot_oz, prices, deals, traps):
+    rec = {
+        "t": datetime.now(timezone.utc).isoformat(),
+        "spot_oz": round(spot_oz, 2),
+        "p14": prices.get("14K"),
+        "deals": len(deals),
+        "traps": len(traps),
+        "avg_under": round(sum(d["under_pct"] for d in deals) / len(deals), 1) if deals else 0,
+        "best": max((d["score"] for d in deals), default=0),
+        "profit": round(sum(d["profit"] for d in deals if d["profit"] > 0), 2),
+        "by_karat": {k: sum(1 for d in deals if d["karat"] == k)
+                     for k in ["10K", "14K", "18K", "22K", "24K"]},
+    }
+    hist = []
+    try:
+        with open(cfg["history_file"]) as f:
+            hist = json.load(f)
+    except Exception:
+        hist = []
+    hist.append(rec)
+    hist = hist[-cfg["history_max"]:]
+    with open(cfg["history_file"], "w") as f:
+        json.dump(hist, f)
+    return hist
+
+
+def collect(token, queries, spot24, cfg, sort, deep):
+    rows, seen, candidates = [], set(), []
+    for q in queries:
+        print(f"Searching ({sort}): {q}")
+        for item in search(token, q, cfg["results_per_query"], sort=sort):
+            iid = item.get("itemId")
+            if iid in seen:
+                continue
+            seen.add(iid)
+            row = evaluate(item, spot24, cfg)
+            if row:
+                rows.append(row)
+            elif deep and cfg["deep_scan"] and needs_description(item, cfg):
+                candidates.append(item)
+
+    if deep and cfg["deep_scan"] and candidates:
+        candidates.sort(key=lambda it: float((it.get("price") or {}).get("value", 1e9) or 1e9))
+        cap = cfg["max_detail_calls"]
+        print(f"Deep-scanning {min(cap, len(candidates))} of {len(candidates)} weightless listings")
+        recovered = 0
+        for item in candidates[:cap]:
+            detail = get_item_detail(token, item.get("itemId"))
+            if detail == "RATELIMIT":
+                print("  ! eBay rate limit hit, stopping deep scan"); break
+            if not detail:
+                continue
+            row = evaluate_deep(item, detail, spot24, cfg)
+            if row:
+                rows.append(row); recovered += 1
+            time.sleep(0.1)
+        print(f"  recovered {recovered} extra deal(s) from descriptions")
+    return rows
+
+
 def main():
     if "PASTE_" in CLIENT_ID or "PASTE_" in CLIENT_SECRET:
         print("Add your eBay CLIENT_ID and CLIENT_SECRET first (see header)."); return
@@ -262,23 +422,24 @@ def main():
     spot_oz = live_spot_per_oz()
     spot24 = spot_oz / TROY
     prices = {f"{k}K": round(PURITY[k] * spot24, 2) for k in PURITY}
-    print(f"Live gold: ${spot_oz:.2f}/oz  ->  24K ${spot24:.2f}/g")
+    print(f"[{SCOUT_MODE}] Live gold: ${spot_oz:.2f}/oz  ->  24K ${spot24:.2f}/g")
 
     token = get_token()
-    rows, seen = [], set()
-    for q in CONFIG["queries"]:
-        print(f"Searching: {q}")
-        for item in search(token, q, CONFIG["results_per_query"]):
-            iid = item.get("itemId")
-            if iid in seen:
-                continue
-            seen.add(iid)
-            row = evaluate(item, spot24, CONFIG)
-            if row:
-                rows.append(row)
 
+    if SCOUT_MODE == "fast":
+        # quick pass over priority categories, newest first, alerts only
+        rows = collect(token, CONFIG["fast_queries"], spot24, CONFIG, sort="newlyListed", deep=False)
+        deals = sorted([r for r in rows if not r["trap"]], key=lambda r: r["score"], reverse=True)
+        print(f"fast: {len(deals)} deal(s) found, sending alerts only")
+        send_alerts(deals)
+        return
+
+    # full sweep
+    rows = collect(token, CONFIG["queries"], spot24, CONFIG, sort="price", deep=True)
     deals = sorted([r for r in rows if not r["trap"]], key=lambda r: r["score"], reverse=True)
     traps = sorted([r for r in rows if r["trap"]], key=lambda r: r["under_pct"], reverse=True)
+
+    hist = append_history(CONFIG, spot_oz, prices, deals, traps)
 
     payload = {
         "updated": datetime.now(timezone.utc).isoformat(),
@@ -287,25 +448,33 @@ def main():
         "payout_pct": CONFIG["payout_pct"],
         "deals": deals,
         "traps_count": len(traps),
+        "total_profit": round(sum(d["profit"] for d in deals if d["profit"] > 0), 2),
     }
     with open(CONFIG["json_out"], "w") as f:
         json.dump(payload, f, indent=2)
 
     cols = ["score","under_pct","karat","grams","price","ship","all_in_per_g",
-            "page_per_g","profit","title","url"]
+            "page_per_g","profit","seller_pct","offer","title","url"]
     for path, data in [(CONFIG["deals_csv"], deals), (CONFIG["traps_csv"], traps)]:
         with open(path, "w", newline="") as f:
             w = csv.DictWriter(f, fieldnames=cols, extrasaction="ignore")
             w.writeheader(); w.writerows(data)
 
-    print(f"\n{len(deals)} solid-gold deals under price -> {CONFIG['json_out']} / {CONFIG['deals_csv']}")
-    print(f"{len(traps)} hidden as too-good-to-be-true -> {CONFIG['traps_csv']}")
+    print(f"\n{len(deals)} deals under price ({len(traps)} traps hidden) · "
+          f"{len(hist)} runs logged")
     for d in deals[:10]:
+        tag = " [offer]" if d["offer"] else ""
         print(f"  [{d['score']:3}] {d['under_pct']:4}% under  {d['karat']} {d['grams']}g  "
-              f"${d['price']:.0f}  profit ${d['profit']:.0f}  {d['title'][:60]}")
+              f"${d['price']:.0f}  profit ${d['profit']:.0f}{tag}  {d['title'][:50]}")
 
     send_alerts(deals)
-    send_email(deals, prices)
+    send_email(deals)
+
+
+def live_spot_per_oz():
+    r = requests.get("https://api.gold-api.com/price/XAU", timeout=20)
+    r.raise_for_status()
+    return float(r.json()["price"])
 
 
 if __name__ == "__main__":
