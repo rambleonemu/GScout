@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Gold Deal Desk</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background:#0a0a0b; color:#e5e5e5; font-family:ui-sans-serif,system-ui,-apple-system,sans-serif;
+         -webkit-font-smoothing:antialiased; padding:24px 18px; }
+  .wrap { max-width:760px; margin:0 auto; }
+  .mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+  header { display:flex; justify-content:space-between; align-items:flex-start;
+           border-bottom:1px solid #262626; padding-bottom:16px; margin-bottom:20px; }
+  h1 { font-family:ui-monospace,monospace; font-size:18px; font-weight:600; letter-spacing:-.3px; color:#fafafa;
+       display:flex; align-items:center; gap:8px; }
+  .dot { width:8px; height:8px; border-radius:50%; background:#fbbf24; }
+  .sub { font-size:12px; color:#737373; margin-top:4px; }
+  .refresh { background:none; border:none; color:#737373; font-size:11px; cursor:pointer; }
+  .refresh:hover { color:#fbbf24; }
+  .label { font-size:10px; text-transform:uppercase; letter-spacing:2px; color:#a3a3a3; }
+  section { margin-bottom:20px; }
+  .prices { display:grid; grid-template-columns:repeat(5,1fr); gap:8px; margin-top:8px; }
+  .price { border:1px solid #262626; background:rgba(23,23,23,.4); border-radius:10px; padding:12px 6px; text-align:center; }
+  .price .k { font-size:10px; text-transform:uppercase; letter-spacing:1px; color:#737373; }
+  .price .v { font-family:ui-monospace,monospace; font-size:14px; font-weight:600; color:#fcd34d; margin-top:4px; }
+  .controls { display:flex; flex-wrap:wrap; gap:12px 20px; align-items:center;
+              border:1px solid #262626; background:rgba(23,23,23,.4); border-radius:10px; padding:12px 16px; }
+  .chip { background:none; border:none; color:#a3a3a3; font-size:12px; padding:4px 8px; border-radius:6px; cursor:pointer; }
+  .chip.on { background:rgba(245,158,11,.18); color:#fcd34d; }
+  input[type=range]{ accent-color:#f59e0b; flex:1; }
+  .banner { border:1px solid rgba(180,120,10,.4); background:rgba(60,40,5,.3); color:#fcd34d;
+            border-radius:10px; padding:8px 14px; font-size:11px; margin-bottom:16px; }
+  .traps { font-size:11px; color:#737373; margin-bottom:16px; display:flex; gap:6px; align-items:center; }
+  .deal { display:flex; gap:14px; align-items:center; border:1px solid #262626; background:rgba(23,23,23,.4);
+          border-radius:10px; padding:12px 16px; margin-bottom:8px; text-decoration:none; color:inherit; transition:.15s; }
+  .deal:hover { border-color:#404040; background:#171717; }
+  .score { width:56px; height:56px; flex-shrink:0; border-radius:10px; background:#0a0a0b;
+           display:flex; flex-direction:column; align-items:center; justify-content:center; }
+  .score .n { font-family:ui-monospace,monospace; font-size:18px; font-weight:700; }
+  .score .l { font-size:8px; text-transform:uppercase; letter-spacing:1px; color:#737373; }
+  .title { font-size:14px; color:#e5e5e5; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .meta { display:flex; flex-wrap:wrap; gap:2px 12px; font-family:ui-monospace,monospace; font-size:11px; color:#737373; margin-top:4px; }
+  .grn { color:#34d399; } .red { color:#fb7185; } .wht { color:#d4d4d4; }
+  .empty { border:1px solid #262626; background:rgba(23,23,23,.4); border-radius:10px;
+           padding:24px; text-align:center; font-size:14px; color:#737373; }
+  .foot { font-size:11px; line-height:1.6; color:#525252; margin-top:20px; }
+  .head-row { display:flex; justify-content:space-between; align-items:baseline; }
+</style>
+</head>
+<body>
+<div class="wrap" id="app">Loading…</div>
+
+<script>
+const KARATS = ["10K","14K","18K","22K","24K"];
+const fmt = n => isFinite(n) ? n.toLocaleString("en-US",{style:"currency",currency:"USD"}) : "—";
+const SAMPLE = {
+  updated:new Date().toISOString(), spot_per_oz:4118.9,
+  prices_per_gram:{ "10K":55.06,"14K":77.13,"18K":99.23,"22K":121.27,"24K":132.29 },
+  payout_pct:1.00, traps_count:4, _sample:true,
+  deals:[
+    {score:84,under_pct:42.1,karat:"14K",grams:31.4,price:1390,ship:0,all_in_per_g:44.27,page_per_g:77.13,profit:1032,title:"14K Solid Gold Rope Chain Scrap Lot 31.4 grams",url:"https://www.ebay.com"},
+    {score:72,under_pct:36.0,karat:"10K",grams:25.0,price:880,ship:8,all_in_per_g:35.52,page_per_g:55.06,profit:489,title:"10K Gold Scrap Lot 25 grams broken chains no stones",url:"https://www.ebay.com"},
+    {score:60,under_pct:30.2,karat:"18K",grams:12.6,price:870,ship:6,all_in_per_g:69.52,page_per_g:99.23,profit:374,title:"18k Solid Gold Bracelet 12.6g",url:"https://www.ebay.com"},
+    {score:49,under_pct:24.3,karat:"22K",grams:9.1,price:835,ship:5,all_in_per_g:92.31,page_per_g:121.27,profit:264,title:"22K Gold Bangle 9.1 grams",url:"https://www.ebay.com"},
+  ]
+};
+let DATA=null, karat="All", minScore=0;
+
+function scoreStyle(s){
+  if(s>=75) return {c:"#34d399",l:"Excellent",ring:"rgba(16,185,129,.4)"};
+  if(s>=50) return {c:"#a3e635",l:"Strong",ring:"rgba(132,204,22,.4)"};
+  if(s>=25) return {c:"#fbbf24",l:"Fair",ring:"rgba(245,158,11,.4)"};
+  return {c:"#a3a3a3",l:"Slim",ring:"#404040"};
+}
+
+async function load(){
+  try{ const r=await fetch("results.json",{cache:"no-store"}); if(!r.ok) throw 0; DATA=await r.json(); }
+  catch(e){ DATA=SAMPLE; }
+  render();
+}
+
+function render(){
+  const d=DATA, app=document.getElementById("app");
+  const deals=d.deals.filter(x=>karat==="All"||x.karat===karat).filter(x=>x.score>=minScore).sort((a,b)=>b.score-a.score);
+  const updated=new Date(d.updated).toLocaleString();
+  app.innerHTML=`
+    <header>
+      <div>
+        <h1><span class="dot"></span>GOLD DEAL DESK</h1>
+        <div class="sub">Solid gold only · no gems · cheaper per gram than today's price</div>
+      </div>
+      <button class="refresh" onclick="load()">↻ refresh</button>
+    </header>
+    <section>
+      <div class="head-row"><div class="label">Today's gold price per gram</div>
+        <div class="mono" style="font-size:11px;color:#737373">${fmt(d.spot_per_oz)}/oz · ${updated}</div></div>
+      <div class="prices">${KARATS.map(k=>`<div class="price"><div class="k">${k}</div><div class="v">${fmt(d.prices_per_gram[k])}</div></div>`).join("")}</div>
+    </section>
+    <section class="controls">
+      <div style="display:flex;align-items:center;gap:8px">
+        <span class="label">Karat</span>
+        <div>${["All",...KARATS].map(k=>`<button class="chip ${karat===k?"on":""}" onclick="setKarat('${k}')">${k}</button>`).join("")}</div>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;flex:1">
+        <span class="label" style="white-space:nowrap">Min score ${minScore}</span>
+        <input type="range" min="0" max="100" value="${minScore}" oninput="setScore(this.value)">
+      </div>
+    </section>
+    ${d._sample?`<div class="banner">Showing sample data. Once the scout writes results.json next to this page, live listings appear here.</div>`:""}
+    ${d.traps_count>0?`<div class="traps">⚠ ${d.traps_count} listing(s) hidden as too-good-to-be-true (check gold_traps.csv by hand)</div>`:""}
+    <section>
+      <div class="head-row"><div class="label">${deals.length} deal(s)</div><div class="label" style="color:#525252">ranked best first</div></div>
+      ${deals.length===0?`<div class="empty">No listings under today's price match these filters right now.</div>`:
+        deals.map(x=>{const st=scoreStyle(x.score);return `
+        <a class="deal" href="${x.url}" target="_blank" rel="noopener">
+          <div class="score" style="box-shadow:inset 0 0 0 1px ${st.ring}">
+            <span class="n" style="color:${st.c}">${x.score}</span><span class="l">${st.l}</span>
+          </div>
+          <div style="min-width:0;flex:1">
+            <div class="title">${x.title}</div>
+            <div class="meta">
+              <span class="wht">${x.karat} · ${x.grams}g</span>
+              <span>${fmt(x.price)}${x.ship?` +${fmt(x.ship)} ship`:""}</span>
+              <span class="grn">↓ ${x.under_pct}% under · ${fmt(x.all_in_per_g)}/g vs ${fmt(x.page_per_g)}/g</span>
+              <span class="${x.profit>0?"grn":"red"}">est. profit ${fmt(x.profit)}</span>
+            </div>
+          </div>
+        </a>`;}).join("")}
+    </section>
+    <div class="foot">Score is 0 to 100. Zero means your buy price only matches what the refiner pays back; it climbs the cheaper per gram a listing gets, stopping short of the too-good-to-be-true line. Profit assumes your buyer pays ${Math.round(d.payout_pct*100)}% of today's price. Stated weight and photos still need your eye before bidding.</div>`;
+}
+function setKarat(k){karat=k;render();}
+function setScore(v){minScore=+v;render();}
+load();
+</script>
+</body>
+</html>
