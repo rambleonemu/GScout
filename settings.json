@@ -1,11 +1,10 @@
 {
-  "payout_pct": 1.0,
+  "payout_pct": 1,
   "trap_under_pct": 0.5,
   "max_price": 2000,
-  "max_detail_calls": 30,
   "min_feedback_pct": 96,
-  "min_feedback_score": 10,
   "alert_min_score": 70,
+  "max_detail_calls": 30,
   "extra_exclude": [],
   "queries": [
     "10k gold scrap grams",
@@ -71,13 +70,23 @@
     "10k gold cufflinks grams",
     "14k gold coin pendant grams",
     "10k gold coin pendant grams",
-    "14k gold signet ring grams"
+    "14k gold signet ring grams",
+    "gold charm grams",
+    "gold jewelry lot grams",
+    "gold brooch grams",
+    "gold bangle grams",
+    "gold anklet grams",
+    "gold cross grams",
+    "gold tie clip grams",
+    "gold herringbone chain grams",
+    "soild gold grams",
+    "10k gokd chain grams",
+    "14k gokd ring grams"
   ],
   "fast_queries": [
     "14k gold scrap grams",
     "10k gold scrap grams",
     "18k gold scrap grams",
     "14k gold chain grams"
-  ],
-  "results_per_query": 50
+  ]
 }
