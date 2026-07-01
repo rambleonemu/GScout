@@ -1,19 +1,19 @@
 name: gold-scout
-
+ 
 on:
   schedule:
     - cron: "7,37 * * * *"   # top-of-hour is GitHub's most contended slot; :23 fires more reliably
   workflow_dispatch:
-
+ 
 permissions:
   contents: read
   pages: write
   id-token: write
-
+ 
 concurrency:
   group: pages
   cancel-in-progress: false   # queue overlapping runs; never kill a sweep mid-flight
-
+ 
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -71,10 +71,13 @@ jobs:
           cp results.json site/
           cp settings.json site/ 2>/dev/null || echo "{}" > site/settings.json
           cp history.json site/ 2>/dev/null || echo "[]" > site/history.json
+          for img in GScout_Mascot.png GScout_Favicon.png GScout_Icon.png; do
+            [ -f "$img" ] && cp "$img" site/ || echo "skipping $img (not found)"
+          done
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site
-
+ 
   deploy:
     needs: build
     runs-on: ubuntu-latest
