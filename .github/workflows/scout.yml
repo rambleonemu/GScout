@@ -76,16 +76,6 @@ jobs:
           if [ "$DEALS" = "0" ]; then
             echo "WARNING: sweep returned 0 deals and 0 traps — eBay quota or API issue likely"
           fi
-      - name: Commit fresh data back to repo
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add results.json history.json seen_ids.json 2>/dev/null || true
-          git diff --cached --quiet && echo "nothing to commit" || \
-            git commit -m "scout: update results [skip ci]" && \
-            git push origin main
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Assemble site
         run: |
           mkdir -p site
