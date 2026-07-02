@@ -11,8 +11,8 @@ permissions:
   id-token: write
  
 concurrency:
-  group: pages
-  cancel-in-progress: false   # queue overlapping runs; never kill a sweep mid-flight
+  group: "pages"
+  cancel-in-progress: false
  
 jobs:
   build:
@@ -104,9 +104,6 @@ jobs:
   deploy:
     needs: build
     runs-on: ubuntu-latest
-    concurrency:
-      group: pages-deploy
-      cancel-in-progress: true   # only the latest deploy matters; cancel stale queued ones
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
