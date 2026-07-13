@@ -12,7 +12,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=Cormorant+Garamond:wght@300;400&display=swap" rel="stylesheet">
 <style>
   :root { color-scheme: dark; }
-  .mascot { position:fixed; bottom:-10px; right:-8px; width:180px; pointer-events:none;
+  .mascot { position:fixed; bottom:-6px; right:2px; width:120px; pointer-events:none;
              opacity:0.82; z-index:0;
              transition:opacity .3s ease; }
   .mascot:hover { opacity:1; }
@@ -145,6 +145,15 @@
   .copy-btn:hover { color:#a3a3a3; background:#1a1a1a; }
   .pilehdr { font-family:'Cormorant Garamond', Georgia, serif; font-size:11px;
              text-transform:uppercase; letter-spacing:3px; color:#a3e635; margin:14px 0 8px; }
+  .iact.bad { color:#fb7185; border-color:#fb718555; }
+  .fbcats { display:flex; flex-wrap:wrap; gap:6px; align-items:center; padding:6px 10px 10px;
+            font-size:11px; color:#a3a3a3; }
+  .fbnote { padding:0 10px 8px; font-size:11px; color:#fb7185; opacity:.8; }
+  .qtable { width:100%; border-collapse:collapse; font-size:11px; }
+  .qtable td, .qtable th { padding:3px 8px; text-align:left; border-bottom:1px solid #1a1a1a; color:#a3a3a3; }
+  .qtable th { color:#525252; text-transform:uppercase; letter-spacing:1px; font-size:9px; }
+  .qbadge { font-size:9px; padding:1px 5px; border-radius:3px; background:#1a1a1a; margin-left:5px; }
+  .qbadge.ex { color:#a78bfa; } .qbadge.pr { color:#34d399; } .qbadge.rt { color:#525252; }
   @media (max-width:640px){ .charts{grid-template-columns:1fr} .stats{grid-template-columns:repeat(2,1fr)} }
 </style>
 </head>
@@ -182,7 +191,7 @@ const ui = LS.get("gdd_ui",{})||{};
 const F = Object.assign({karat:"All",minScore:0,minProfit:0,showTraps:false,
   hideSeen:false,showHidden:false,settingsOpen:false,
   sortBy:"score",   // "score" | "profit" | "age" | "pricedrop"
-  showTrends:true, showPrices:true, showEnded:false}, ui.F||{});
+  showTrends:true, showPrices:true, showEnded:false, showQueries:false, fbOpen:null}, ui.F||{});
 const saveUI = ()=>{ ui.F=F; LS.set("gdd_ui",ui); };
 
 const SAMPLE = {
@@ -204,7 +213,14 @@ const SAMPLE_HIST = Array.from({length:24},(_,i)=>({
   avg_under:24+Math.round(Math.abs(Math.cos(i/2))*10)
 }));
 
-let DATA=null, HIST=[], SET=null, TRUSTED={};
+let DATA=null, HIST=[], SET=null, TRUSTED={}, QSTATS=null;
+// ---- feedback (👍/👎) : shown locally at once, committed to feedback.json so the engine learns ----
+let FB = LS.get("gdd_fb", {});               // id -> {verdict, category, ts, query, seller}
+let FB_PENDING = LS.get("gdd_fb_pending", []); // events not yet committed to the repo
+const FB_CATS = [["plated","plated / not solid"],["weight_karat","wrong weight/karat"],
+  ["stones","stones / mixed materials"],["seller","sketchy seller"],
+  ["overpriced","not profitable"],["style","not my style"],["other","other"]];
+const persistFB = ()=>{ LS.set("gdd_fb",FB); LS.set("gdd_fb_pending",FB_PENDING); };
 
 function scoreStyle(s){
   if(s>=75) return {c:"#34d399",l:"Excellent"};
@@ -378,6 +394,16 @@ async function load(){
   catch(e){ HIST=DATA._sample?SAMPLE_HIST:[]; }
   try{ const s=await fetch("settings.json",{cache:"no-store"}); SET=s.ok?await s.json():null; }
   catch(e){ SET=null; }
+  try{ const q=await fetch("query_stats.json",{cache:"no-store"}); QSTATS=q.ok?await q.json():null; }
+  catch(e){ QSTATS=null; }
+  try{ const fb=await fetch("feedback.json",{cache:"no-store"});
+    if(fb.ok){ const committed=await fb.json();
+      (committed||[]).forEach(e=>{ if(e.id && (!FB[e.id]||((e.ts||0)>=(FB[e.id].ts||0)))) FB[e.id]=e; });
+      // drop pending events the repo already has
+      const have=new Set((committed||[]).map(e=>e.id+":"+e.ts));
+      FB_PENDING=FB_PENDING.filter(e=>!have.has(e.id+":"+e.ts)); persistFB(); }
+  }catch(e){}
+  if(FB_PENDING.length) scheduleFBFlush();
   if(!SET) SET={payout_pct:DATA.payout_pct||1,trap_under_pct:0.5,max_price:2000,min_feedback_pct:96,alert_min_score:70,extra_exclude:[],queries:(DATA.settings_used&&DATA.settings_used.queries)||[]};
 
   // NEW = current ids not seen on a previous load; then fold them into KNOWN
@@ -532,6 +558,27 @@ function render(){
         <textarea id="s_queries">${(SET.queries||[]).join("\n")}</textarea></div>
       <div class="ctl" style="margin-bottom:12px"><span>Extra words to always exclude — comma separated</span>
         <textarea id="s_exclude" style="min-height:50px">${(SET.extra_exclude||[]).join(", ")}</textarea></div>
+
+      <div class="label" style="margin:14px 0 8px">Quota & learning · the engine fits searches inside your real eBay budget</div>
+      <div class="row" style="margin-bottom:10px">
+        <div class="ctl"><span>eBay calls/day budget</span><input id="s_budget" type="number" step="100" value="${SET.daily_call_budget||4500}"></div>
+        <div class="ctl"><span>Feedback strength %</span><input id="s_fbspan" type="number" step="1" min="0" max="50" value="${Math.round((SET.fb_weight_span??0.15)*100)}"></div>
+        <label class="toggle" style="align-self:end"><input type="checkbox" id="s_nomixed" ${SET.exclude_mixed!==false?"checked":""}> exclude mixed-karat / lots</label>
+      </div>
+      <div class="row" style="margin-bottom:10px">
+        <span class="label">Sort sweep</span>
+        ${[["alternate","alternate (½ calls)"],["both","both (2× calls)"],["price","cheapest only"],["newlyListed","newest only"]].map(([v,l])=>
+          `<button class="chip ${(SET.sort_mode||"alternate")===v?"on":""}" onclick="setSortMode('${v}')">${l}</button>`).join("")}
+      </div>
+      <div class="row" style="margin-bottom:10px">
+        <label class="toggle"><input type="checkbox" id="s_explore" ${SET.explore_enabled!==false?"checked":""}> try new searches with spare budget</label>
+        <div class="ctl"><span>Explore % of slots</span><input id="s_exfrac" type="number" step="1" min="0" max="50" value="${Math.round((SET.explore_frac??0.12)*100)}"></div>
+        <div class="ctl"><span>Promote at N deals</span><input id="s_promote" type="number" step="1" value="${SET.promote_min_deals||3}"></div>
+        <div class="ctl"><span>Retire after N dry runs</span><input id="s_retire" type="number" step="1" value="${SET.retire_min_runs||25}"></div>
+      </div>
+      <div class="ctl" style="margin-bottom:12px"><span>Your own candidate searches to try — one per line (explorer picks these first)</span>
+        <textarea id="s_pool" style="min-height:50px">${(SET.explore_pool||[]).join("\n")}</textarea></div>
+
       <div class="row" style="margin-bottom:8px">
         <button class="btn" onclick="saveSettings()">Save</button>
         <button class="btn ghost" onclick="copySettings()">Copy JSON</button>
@@ -570,12 +617,31 @@ function render(){
       `:""}
     </section>`:""}
 
-    <div class="foot">⚡ run now triggers an immediate sweep (≈2 min, then refresh). Click a listing to open it (marks it seen). $ logs it as bought — sellers you've bought from get a ★ trusted badge and a ranking bump on future listings. When you log a buy it asks for the actual net (blank uses the melt estimate), and the "margin" tile mirrors that back so you can see whether the tool's deals turn into real money. ★ saves to the top pile, ✕ hides for good. When a listing drops out of the feed it moves to <b>Recently sold / ended</b> for ${ENDED_TTL_DAYS} days — log any you actually bought before they age out, or just watch what's selling. ${boughtCount<15?`Pattern-learning beyond trusted-sellers needs ~15+ logged buys to mean anything (you have ${boughtCount}); keep logging and it gets smarter.`:''} All triage is stored on this device. Stated weight and photos still need your eye before bidding.</div>`;
+    ${QSTATS&&Object.keys(QSTATS.queries||{}).length?`
+    <section>
+      <div class="sec-hdr" onclick="setF('showQueries',!F.showQueries)">
+        <div class="label">Search performance · ${Object.keys(QSTATS.queries).length} tracked · run ${QSTATS.meta.run_counter}</div>
+        <span class="sec-toggle">${F.showQueries?"▲ collapse":"▼ expand"}</span>
+      </div>
+      ${F.showQueries?`
+        ${DATA.learning?`<div class="note" style="margin:4px 0 8px;color:#737373">Last run: ${DATA.learning.queries_ran} searches (${(DATA.learning.sorts||[]).join("+")})${(DATA.learning.explored||[]).length?` · explored: ${DATA.learning.explored.map(q=>`"${q}"`).join(", ")}`:""}${(DATA.learning.promoted||[]).length?` · <span style="color:#34d399">promoted: ${DATA.learning.promoted.join(", ")}</span>`:""}${DATA.learning.feedback_events?` · learning from ${DATA.learning.feedback_events} taps`:""}</div>`:""}
+        <table class="qtable"><tr><th>search</th><th>runs</th><th>deals</th><th>traps</th><th>hit rate</th></tr>
+        ${Object.entries(QSTATS.queries).sort((a,b)=>(b[1].deals||0)-(a[1].deals||0)).slice(0,60).map(([q,s])=>
+          `<tr><td>${q}${s.origin==="explore"?`<span class="qbadge ex">explore</span>`:""}${s.status==="promoted"?`<span class="qbadge pr">promoted</span>`:""}${s.status==="retired"?`<span class="qbadge rt">retired</span>`:""}</td>
+           <td>${s.runs||0}</td><td>${s.deals||0}</td><td>${s.traps||0}</td>
+           <td>${s.runs?((s.deals||0)/s.runs).toFixed(2):"—"}/run</td></tr>`).join("")}
+        </table>
+        <div class="note" style="margin-top:6px;color:#525252">Retired searches stopped earning their calls; re-add one to the query list to revive it. Promoted explorers already compete with your core list — add them there to lock them in.</div>
+      `:""}
+    </section>`:""}
+    <div id="fbmsg" class="note" style="margin:8px 0"></div>
+
+    <div class="foot">👍/👎 on any listing teaches the engine: good taps boost that search and seller, bad taps (with a reason) push them down — bounded nudges, never vetoes, and taste ("not my style") is never punished. Feedback commits to the repo a few seconds after you tap (needs the GitHub token below). ⚡ run now triggers an immediate sweep (≈2 min, then refresh). Click a listing to open it (marks it seen). $ logs it as bought — sellers you've bought from get a ★ trusted badge and a ranking bump on future listings. When you log a buy it asks for the actual net (blank uses the melt estimate), and the "margin" tile mirrors that back so you can see whether the tool's deals turn into real money. ★ saves to the top pile, ✕ hides for good. When a listing drops out of the feed it moves to <b>Recently sold / ended</b> for ${ENDED_TTL_DAYS} days — log any you actually bought before they age out, or just watch what's selling. ${boughtCount<15?`Pattern-learning beyond trusted-sellers needs ~15+ logged buys to mean anything (you have ${boughtCount}); keep logging and it gets smarter.`:''} All triage is stored on this device. Stated weight and photos still need your eye before bidding.</div>`;
 }
 
 function dealRow(x){
   const st=scoreStyle(x.score), isNew=NEW.has(x.id), seen=SEEN.has(x.id), saved=SAVED.has(x.id);
-  const bought=!!BOUGHT[x.id];
+  const bought=!!BOUGHT[x.id], fb=FB[x.id];
   const trusted=x.seller_user && TRUSTED[x.seller_user];
   const cls=["deal"]; if(x.trap)cls.push("trap"); if(seen&&!saved&&!bought)cls.push("seen");
   if(saved)cls.push("saved"); if(bought)cls.push("bought");
@@ -610,11 +676,17 @@ function dealRow(x){
         ${!x.trap&&x.deal_why?`<div class="why">✓ ${x.deal_why}</div>`:""}
         </div></a>
     <div class="acts">
+      <button class="iact ${fb&&fb.verdict==="good"?"on":""}" title="good find — teach the engine" onclick="fbGood('${x.id}')">👍</button>
+      <button class="iact ${fb&&fb.verdict==="bad"?"bad":""}" title="bad find — say why, engine learns" onclick="fbBad('${x.id}')">👎</button>
       <button class="iact ${bought?"on":""}" title="${bought?'bought ✓':'mark as bought'}" onclick="markBought('${x.id}')">$</button>
       <button class="iact ${saved?"on":""}" title="save" onclick="toggleSet('saved','${x.id}')">★</button>
       <button class="iact" title="hide" onclick="toggleSet('hidden','${x.id}')">✕</button>
       <button class="copy-btn" title="copy link" onclick="copyLink('${x.url}',event)">⎘</button>
-    </div></div>`;
+    </div></div>
+    ${F.fbOpen===x.id?`<div class="fbcats">why is it bad? ${FB_CATS.map(([k,l])=>
+      `<button class="chip" onclick="fbBadCat('${x.id}','${k}')">${l}</button>`).join("")}
+      <button class="chip" onclick="F.fbOpen=null;render()">cancel</button></div>`:""}
+    ${fb&&fb.verdict==="bad"&&fb.category?`<div class="fbnote">👎 ${(FB_CATS.find(c=>c[0]===fb.category)||["","flagged"])[1]} — the engine deprioritizes this pattern</div>`:""}`;
 }
 
 function endedRow(x){
@@ -698,18 +770,72 @@ async function runNow(){
   }catch(e){ rmsg("run trigger failed; open Actions manually","#fb7185"); }
 }
 
+// ---- feedback plumbing ----
+function fbEvent(x, verdict, category){
+  const ev={id:x.id, query:x.query||"", seller:x.seller_user||"", karat:x.karat||"",
+            verdict, category:category||null, ts:Date.now()};
+  FB[x.id]=ev; FB_PENDING.push(ev); persistFB(); scheduleFBFlush(); render();
+}
+function fbGood(id){ const x=findDeal(id); if(!x) return;
+  if(FB[id]&&FB[id].verdict==="good"){ delete FB[id]; persistFB(); render(); return; } // undo
+  fbEvent(x,"good"); }
+function fbBad(id){ if(FB[id]&&FB[id].verdict==="bad"){ delete FB[id]; persistFB(); render(); return; }
+  F.fbOpen=(F.fbOpen===id?null:id); render(); }
+function fbBadCat(id,cat){ const x=findDeal(id); if(!x) return; F.fbOpen=null; fbEvent(x,"bad",cat); }
+function findDeal(id){ return [...(DATA.deals||[]),...(DATA.traps||[])].find(d=>d.id===id); }
+let _fbTimer=null;
+function scheduleFBFlush(){ clearTimeout(_fbTimer); _fbTimer=setTimeout(flushFeedback, 4000); }
+async function flushFeedback(){
+  if(!FB_PENDING.length) return;
+  const token=localStorage.getItem("gdd_token");
+  if(!token){ fbmsg("feedback saved on this device — add a GitHub token in engine settings so the engine can learn from it"); return; }
+  const owner=location.hostname.split(".")[0], repo=location.pathname.split("/").filter(Boolean)[0];
+  const api=`https://api.github.com/repos/${owner}/${repo}/contents/feedback.json`;
+  const hdr={Authorization:`Bearer ${token}`,Accept:"application/vnd.github+json"};
+  try{
+    let sha, committed=[];
+    const g=await fetch(api+"?ref=main",{headers:hdr});
+    if(g.ok){ const j=await g.json(); sha=j.sha;
+      try{ committed=JSON.parse(decodeURIComponent(escape(atob((j.content||"").replace(/\n/g,""))))); }catch(e){ committed=[]; } }
+    const have=new Set(committed.map(e=>e.id+":"+e.ts));
+    const merged=committed.concat(FB_PENDING.filter(e=>!have.has(e.id+":"+e.ts))).slice(-3000);
+    const put=await fetch(api,{method:"PUT",headers:hdr,body:JSON.stringify({
+      message:`feedback: ${FB_PENDING.length} tap(s) from dashboard`, branch:"main", sha,
+      content:btoa(unescape(encodeURIComponent(JSON.stringify(merged,null,1))))})});
+    if(put.ok){ FB_PENDING=[]; persistFB(); fbmsg("feedback committed — engine learns next run","#34d399"); }
+    else if(put.status===409){ scheduleFBFlush(); }  // raced a scout commit; retry
+    else fbmsg("feedback commit failed ("+put.status+") — kept locally, will retry","#fb7185");
+  }catch(e){ fbmsg("feedback commit error — kept locally, will retry","#fb7185"); scheduleFBFlush(); }
+}
+function fbmsg(t,c){ const e=document.getElementById("fbmsg"); if(e){ e.textContent=t; e.style.color=c||"#737373"; } }
+
 function rmsgSettings(){}
 function gatherSettings(){
   const lines=document.getElementById("s_queries").value.split("\n").map(s=>s.trim()).filter(Boolean);
   const ex=document.getElementById("s_exclude").value.split(",").map(s=>s.trim()).filter(Boolean);
-  return { payout_pct:(+document.getElementById("s_payout").value||100)/100,
+  const pool=(document.getElementById("s_pool")?.value||"").split("\n").map(s=>s.trim()).filter(Boolean);
+  const v=(id,dflt)=>{ const el=document.getElementById(id); return el? (+el.value||dflt): dflt; };
+  // spread SET first: keys this panel doesn't render survive a save instead of being wiped
+  return Object.assign({}, SET||{}, {
+    payout_pct:(+document.getElementById("s_payout").value||100)/100,
     trap_under_pct:(+document.getElementById("s_trap").value||50)/100,
     max_price:+document.getElementById("s_maxprice").value||2000,
     min_feedback_pct:+document.getElementById("s_seller").value||96,
     alert_min_score:+document.getElementById("s_alert").value||70,
     max_detail_calls:(SET&&SET.max_detail_calls)||30,
-    extra_exclude:ex, queries:lines, fast_queries:(SET&&SET.fast_queries)||undefined };
+    extra_exclude:ex, queries:lines, fast_queries:(SET&&SET.fast_queries)||undefined,
+    daily_call_budget:v("s_budget",4500),
+    sort_mode:(SET&&SET._sort_mode_ui)||SET.sort_mode||"alternate",
+    exclude_mixed:!!document.getElementById("s_nomixed")?.checked,
+    explore_enabled:!!document.getElementById("s_explore")?.checked,
+    explore_frac:v("s_exfrac",12)/100,
+    explore_pool:pool,
+    promote_min_deals:v("s_promote",3),
+    retire_min_runs:v("s_retire",25),
+    fb_weight_span:v("s_fbspan",15)/100,
+  });
 }
+function setSortMode(m){ SET._sort_mode_ui=m; SET.sort_mode=m; render(); }
 function msg(t,c){ const e=document.getElementById("savemsg"); if(e){e.textContent=t; e.style.color=c||"#737373";} }
 function copySettings(){ const j=JSON.stringify(gatherSettings(),null,2);
   navigator.clipboard.writeText(j).then(()=>msg("copied — paste into settings.json, commit","#34d399"),

@@ -61,6 +61,46 @@ CONFIG = {
     "traps_csv":  "gold_traps.csv",
     "history_file": "history.json",
     "history_max":  2000,     # keep roughly the last few weeks of runs
+
+    # ---- quota budgeting (all overridable from settings.json / dashboard) ----
+    "daily_call_budget": 4500,  # stay under eBay's 5,000/day with headroom for retries
+    "runs_per_day": 0,          # 0 = auto-estimate from history timestamps (fallback 48)
+    "sort_mode": "alternate",   # "alternate" (halves calls) | "both" | "price" | "newlyListed"
+
+    # ---- content filters ----
+    "exclude_mixed": True,      # drop multi-karat items entirely (lots, pendant-on-chain combos)
+
+    # ---- feedback learning (👍/👎 taps from the dashboard -> feedback.json) ----
+    "feedback_file": "feedback.json",
+    "fb_half_life_days": 45,    # how fast old taps fade
+    "fb_weight_span": 0.15,     # max score nudge: ±15%. 0 disables learning entirely
+    "fb_seller_block_bad": 2,   # decayed bad-seller signals with zero goods -> seller skipped
+    # which categories move which trust weights (query / seller), overridable
+    "fb_effects": {
+        "plated":       {"query": 1.0, "seller": 1.0},
+        "weight_karat": {"query": 1.0, "seller": 0.0},
+        "stones":       {"query": 0.6, "seller": 0.0},
+        "seller":       {"query": 0.0, "seller": 1.0},
+        "lot":          {"query": 0.5, "seller": 0.0},
+        "overpriced":   {"query": 0.0, "seller": 0.0},   # pricing math, not their fault
+        "style":        {"query": 0.0, "seller": 0.0},   # taste — logged, never punished
+        "other":        {"query": 0.0, "seller": 0.0},
+    },
+
+    # ---- dynamic query engine ----
+    "query_stats_file": "query_stats.json",
+    "explore_enabled": True,
+    "explore_frac": 0.12,       # share of each run's query slots spent trying new searches
+    "explore_pool": [],         # your own candidate searches to try first (from dashboard)
+    "promote_min_deals": 3,     # explore query with this many total deals -> promoted to core
+    "retire_min_runs": 25,      # a query this many runs old with 0 deals AND 0 traps -> retired
+    "starvation_cap": 6,        # rotation cadence hint (informational)
+    "exploit_share": 0.7,       # share of core slots locked to proven top performers
+    # term lists the auto-explorer combines when your own pool runs dry
+    "explore_karats": ["10k", "14k", "18k"],
+    "explore_items": ["wedding band", "hoop earrings", "figaro chain", "box chain",
+                      "curb chain", "medal", "religious medal", "id bracelet",
+                      "watch case", "pinky ring", "nugget ring", "grillz"],
 }
 
 EMAIL = {
@@ -91,13 +131,15 @@ NOT_SOLID = re.compile(
 PLATED_RE = re.compile(
     r"\b(gold[\s-]?filled|gold[\s-]?plat|plated|electroplate|electro[\s-]?plat|"
     r"vermeil|g\.?e\.?p|gep|rgp|hge|\dkgp|overlay|bonded|clad)\b", re.I)
+# NOTE: every stone noun carries s? (or its irregular plural) — the old version
+# matched "diamond" but NOT "diamonds", which let plural-worded listings through.
 HAS_STONE = re.compile(
-    r"\b(diamond|gemstone|gem|stone|stones|cz|cubic\s?zirconia|sapphire|ruby|"
-    r"emerald|pearl|opal|topaz|amethyst|garnet|turquoise|jade|onyx|moissanite|"
-    r"rhinestone|crystal|birthstone|set\s?with|quartz|glass|cameo|"
-    r"shell|coral|amber|agate|lapis|jasper|citrine|peridot|aquamarine|tourmaline|"
-    r"zircon|spinel|malachite|moonstone|marcasite|abalone|carnelian|chalcedony|"
-    r"hematite|obsidian|mother\s?of\s?pearl|tiger'?s?\s?eye|resin|ceramic|enamel)\b", re.I)
+    r"\b(diamonds?|gemstones?|gems?|stones?|cz|cubic\s?zirconias?|sapphires?|rub(?:y|ies)|"
+    r"emeralds?|pearls?|opals?|topaz(?:es)?|amethysts?|garnets?|turquoise|jades?|onyx|moissanites?|"
+    r"rhinestones?|crystals?|birthstones?|set\s?with|quartz|glass|cameos?|"
+    r"shells?|corals?|amber|agates?|lapis|jaspers?|citrines?|peridots?|aquamarines?|tourmalines?|"
+    r"zircons?|spinels?|malachites?|moonstones?|marcasites?|abalone|carnelians?|chalcedony|"
+    r"hematites?|obsidian|mother\s?of\s?pearl|tiger'?s?\s?eyes?|resin|ceramic|enamel(?:ed)?)\b", re.I)
 NON_GOLD = re.compile(
     r"\b(silver|sterling|925|platinum|palladium|titanium|stainless|steel|"
     r"brass|copper|pewter|tungsten|bronze|nickel)\b", re.I)
@@ -106,9 +148,11 @@ BAR_RE = re.compile(r"\b(bar|bullion|ingot|shot|pellet|grain)\b", re.I)
 HALLMARK_RE = re.compile(r"\b(stamp(ed)?|hallmark(ed)?|marked|signed|tested|acid[\s-]?test"
                          r"|electronic(ally)?[\s-]?tested|xrf)\b", re.I)
 SOLID_RE = re.compile(r"\bsolid\b", re.I)
-KARAT_RE = re.compile(r"\b(10|14|18|22|24)\s?k(?:t|arat)?\b", re.I)
+# (?<![\$\d.]) stops "$10k obo" reading as 10 karat and "4.14k" style decimals
+KARAT_RE = re.compile(r"(?<![\$\d.])\b(10|14|18|22|24)\s?k(?:t|arat)?\b", re.I)
 FINENESS = {"417": 10, "585": 14, "750": 18, "916": 22, "990": 24, "999": 24}
-FINENESS_RE = re.compile(r"(?<![\d$.])(417|585|750|916|990|999)(?![\d])")
+# (?!\.?\d) stops the 585 in a price like "585.00" from reading as 14k fineness
+FINENESS_RE = re.compile(r"(?<![\d$.])(417|585|750|916|990|999)(?!\.?\d)")
 GRAM_RE  = re.compile(r"(\d*\.?\d+)\s?(?:g\b|gr\b|gram|grams)", re.I)
 DWT_RE   = re.compile(r"(\d*\.?\d+)\s?(?:dwt|pennyweight|penny\s?weight)\b", re.I)
 FRACTION_RE = re.compile(r"(\d+)\s*/\s*(\d+)\s?(?:g\b|gr\b|gram|grams)", re.I)
@@ -155,15 +199,20 @@ def extract_grams(text):
     if m:
         num, den = float(m.group(1)), float(m.group(2))
         if den:
-            return round(num / den, 3)
+            return _sane_g(round(num / den, 3))
     m = GRAM_RE.search(text)
     if m:
-        v = float(m.group(1))
-        return v if v > 0 else None
+        return _sane_g(float(m.group(1)))
     m = DWT_RE.search(text)
     if m:
-        return round(float(m.group(1)) * DWT_TO_G, 2)
+        return _sane_g(round(float(m.group(1)) * DWT_TO_G, 2))
     return None
+
+
+def _sane_g(v):
+    """Weights outside (0, 2000]g on sub-$2000 listings are parse errors
+    (mm measurements, model numbers), not gold. Reject rather than misprice."""
+    return v if v and 0 < v <= 2000 else None
 
 
 def strip_html(s):
@@ -181,7 +230,7 @@ def extract_gold_grams(text):
         if m:
             try:
                 v = float(m.group(1))
-                return round(v * DWT_TO_G, 2) if "dwt" in m.group(0).lower() else v
+                return _sane_g(round(v * DWT_TO_G, 2) if "dwt" in m.group(0).lower() else v)
             except (TypeError, ValueError):
                 pass
     return None
@@ -205,6 +254,8 @@ def is_solid_no_stones(text):
 
 def seller_ok(item, cfg):
     s = item.get("seller") or {}
+    if s.get("username") and s["username"] in cfg.get("_seller_block", ()):
+        return False   # you flagged this seller repeatedly with zero goods
     try:
         pct = s.get("feedbackPercentage")
         if pct is not None and float(pct) < cfg["min_feedback_pct"]:
@@ -235,9 +286,28 @@ def load_settings(cfg):
     except Exception:
         return
     for k in ("payout_pct", "trap_under_pct", "max_price", "max_detail_calls",
-              "min_feedback_pct", "min_feedback_score", "results_per_query"):
+              "min_feedback_pct", "min_feedback_score", "results_per_query",
+              "daily_call_budget", "runs_per_day", "fb_half_life_days",
+              "fb_weight_span", "fb_seller_block_bad", "explore_frac",
+              "promote_min_deals", "retire_min_runs", "starvation_cap", "exploit_share"):
         if isinstance(s.get(k), (int, float)):
             cfg[k] = s[k]
+    for k in ("exclude_mixed", "explore_enabled"):
+        if isinstance(s.get(k), bool):
+            cfg[k] = s[k]
+    if s.get("sort_mode") in ("alternate", "both", "price", "newlyListed"):
+        cfg["sort_mode"] = s["sort_mode"]
+    if isinstance(s.get("explore_pool"), list):
+        cfg["explore_pool"] = [q.strip() for q in s["explore_pool"]
+                               if isinstance(q, str) and q.strip()]
+    for k in ("explore_karats", "explore_items"):
+        if isinstance(s.get(k), list) and s[k]:
+            cfg[k] = [str(x).strip() for x in s[k] if str(x).strip()]
+    if isinstance(s.get("fb_effects"), dict):
+        for cat, eff in s["fb_effects"].items():
+            if isinstance(eff, dict):
+                cfg["fb_effects"][cat] = {"query": float(eff.get("query", 0)),
+                                          "seller": float(eff.get("seller", 0))}
     if isinstance(s.get("queries"), list):
         qs = [q.strip() for q in s["queries"] if isinstance(q, str) and q.strip()]
         if qs:
@@ -257,6 +327,204 @@ def load_settings(cfg):
         EXTRA_EXCLUDE_RE = re.compile(r"\b(" + "|".join(words) + r")\b", re.I)
     print(f"settings.json: {len(cfg['queries'])} queries · payout {cfg['payout_pct']} · "
           f"trap {cfg['trap_under_pct']} · {len(words)} extra excludes")
+
+
+# ======================== feedback learning engine =========================
+
+def load_feedback(cfg):
+    """Read feedback.json (👍/👎 taps committed by the dashboard) and turn it into
+    per-query and per-seller trust multipliers plus a seller blocklist.
+
+    Design: exponential time decay (half-life fb_half_life_days) so old taps fade;
+    Laplace-smoothed trust = (good+1)/(good+bad+2) so one tap can't swing anything;
+    trust maps to a bounded multiplier 1 ± fb_weight_span. A nudge, never a veto.
+    Returns (query_mult, seller_mult, seller_block, n_events)."""
+    try:
+        with open(cfg["feedback_file"]) as f:
+            events = json.load(f)
+        assert isinstance(events, list)
+    except Exception:
+        return {}, {}, set(), 0
+
+    now = datetime.now(timezone.utc).timestamp()
+    half = max(1.0, float(cfg["fb_half_life_days"])) * 86400
+    qg, qb, sg, sb = {}, {}, {}, {}
+    for e in events:
+        if not isinstance(e, dict) or e.get("verdict") not in ("good", "bad"):
+            continue
+        ts = float(e.get("ts", now)) / (1000 if float(e.get("ts", now)) > 1e11 else 1)
+        w = 0.5 ** (max(0.0, now - ts) / half)
+        q, s = (e.get("query") or "").strip(), (e.get("seller") or "").strip()
+        if e["verdict"] == "good":
+            if q: qg[q] = qg.get(q, 0) + w
+            if s: sg[s] = sg.get(s, 0) + w
+        else:
+            eff = cfg["fb_effects"].get(e.get("category") or "other",
+                                        {"query": 0.0, "seller": 0.0})
+            if q and eff.get("query"):  qb[q] = qb.get(q, 0) + w * eff["query"]
+            if s and eff.get("seller"): sb[s] = sb.get(s, 0) + w * eff["seller"]
+
+    span = max(0.0, min(0.5, float(cfg["fb_weight_span"])))
+    def mults(good, bad):
+        out = {}
+        for k in set(good) | set(bad):
+            trust = (good.get(k, 0) + 1) / (good.get(k, 0) + bad.get(k, 0) + 2)
+            out[k] = round(1 + span * 2 * (trust - 0.5), 4)
+        return out
+
+    block = {s for s, b in sb.items()
+             if b >= cfg["fb_seller_block_bad"] - 0.05 and sg.get(s, 0) == 0}
+    return mults(qg, qb), mults(sg, sb), block, len(events)
+
+
+# ====================== dynamic query selection engine ======================
+
+def load_query_stats(cfg):
+    try:
+        with open(cfg["query_stats_file"]) as f:
+            st = json.load(f)
+        st.setdefault("meta", {}).setdefault("run_counter", 0)
+        st.setdefault("queries", {})
+        return st
+    except Exception:
+        return {"meta": {"run_counter": 0}, "queries": {}}
+
+
+def save_query_stats(cfg, stats):
+    try:
+        with open(cfg["query_stats_file"], "w") as f:
+            json.dump(stats, f, indent=1)
+    except Exception as e:
+        print(f"  ! couldn't save query stats: {e}")
+
+
+def estimate_runs_per_day(cfg):
+    """Use the actual gaps between recent runs in history.json — the ground truth of
+    your real cadence — falling back to 48 (30-min) if history is thin."""
+    if cfg["runs_per_day"]:
+        return max(1, int(cfg["runs_per_day"]))
+    try:
+        with open(cfg["history_file"]) as f:
+            hist = json.load(f)
+        ts = [datetime.fromisoformat(h["t"]).timestamp() for h in hist[-50:]]
+        gaps = sorted(b - a for a, b in zip(ts, ts[1:]) if 60 < b - a < 6 * 3600)
+        if len(gaps) >= 5:
+            return max(1, min(200, round(86400 / gaps[len(gaps) // 2])))
+    except Exception:
+        pass
+    return 48
+
+
+def sorts_for_run(cfg, run_counter):
+    mode = cfg["sort_mode"]
+    if mode == "both":
+        return ["price", "newlyListed"]
+    if mode in ("price", "newlyListed"):
+        return [mode]
+    return ["price"] if run_counter % 2 == 0 else ["newlyListed"]  # alternate
+
+
+def explore_candidates(cfg, stats):
+    """Candidate searches not already active/known: your own explore_pool first,
+    then auto-combined karat × item terms. Retired queries are never re-tried."""
+    active = set(cfg["queries"])
+    known = stats["queries"]
+    pool = [q for q in cfg["explore_pool"] if q not in active]
+    for k in cfg["explore_karats"]:
+        for item in cfg["explore_items"]:
+            q = f"{k} gold {item} grams"
+            if q not in active and q not in pool:
+                pool.append(q)
+    return [q for q in pool
+            if known.get(q, {}).get("status") not in ("retired", "promoted")]
+
+
+def select_queries(cfg, stats, query_mult):
+    """Pick which searches this run gets, inside the real quota budget.
+
+    Slots = (daily budget / runs per day − detail-call reserve − margin) / sorts.
+    Core queries are ranked by smoothed deals-per-run × your feedback trust, with a
+    starvation guarantee: anything unrun for starvation_cap runs jumps the queue,
+    so low-data queries keep getting fair trials instead of dying unranked.
+    A configurable slice of slots goes to exploration when the pool has candidates.
+    """
+    rc = stats["meta"]["run_counter"]
+    sorts = sorts_for_run(cfg, rc)
+    rpd = estimate_runs_per_day(cfg)
+    per_run = cfg["daily_call_budget"] / rpd
+    pages = max(1, -(-cfg["results_per_query"] // 50))          # ceil, calls per query per sort
+    slots = int((per_run - cfg["max_detail_calls"] - 3) / (len(sorts) * pages))
+    slots = max(4, slots)
+
+    qs = stats["queries"]
+    # core = your settings list + explorers that earned promotion, minus retirees
+    promoted = [q for q, st in qs.items()
+                if st.get("status") == "promoted" and q not in cfg["queries"]]
+    active = [q for q in list(cfg["queries"]) + promoted
+              if qs.get(q, {}).get("status") != "retired"]
+
+    def value(q):
+        st = qs.get(q, {})
+        return ((st.get("deals", 0) + 1) / (st.get("runs", 0) + 2)) * query_mult.get(q, 1.0)
+
+    explore = []
+    if cfg["explore_enabled"]:
+        pool = explore_candidates(cfg, stats)
+        n_ex = min(len(pool), max(0, round(slots * cfg["explore_frac"])))
+        if n_ex:
+            pool.sort(key=lambda q: (qs.get(q, {}).get("runs", 0),
+                                     qs.get(q, {}).get("last_rc", 0)))
+            explore = pool[:n_ex]
+
+    # two-tier core fill: proven earners are never evicted by rotation —
+    # exploit_share of slots goes to top value, the rest to least-recently-run
+    core_slots = max(0, slots - len(explore))
+    ranked = sorted(active, key=lambda q: -value(q))
+    n_top = min(core_slots, max(1, int(core_slots * cfg.get("exploit_share", 0.7))))
+    core = ranked[:n_top]
+    rest = sorted((q for q in active if q not in set(core)),
+                  key=lambda q: qs.get(q, {}).get("last_rc", -10**9))
+    core += rest[:core_slots - n_top]
+
+    est = (len(core) + len(explore)) * len(sorts) * pages + cfg["max_detail_calls"]
+    print(f"[budget] ~{per_run:.0f} calls/run available ({cfg['daily_call_budget']}/day "
+          f"÷ ~{rpd} runs) -> {slots} query slots · sorts: {'+'.join(sorts)} · "
+          f"{len(core)} core + {len(explore)} explore · est {est} calls this run")
+    return core, explore, sorts
+
+
+def update_query_stats(cfg, stats, ran, rows):
+    """Record this run's outcomes; promote explorers that earn it, retire dead weight."""
+    stats["meta"]["run_counter"] += 1
+    rc = stats["meta"]["run_counter"]
+    qs = stats["queries"]
+    active = set(cfg["queries"])
+    for q in ran:
+        st = qs.setdefault(q, {"runs": 0, "deals": 0, "traps": 0,
+                               "origin": "core" if q in active else "explore"})
+        st["runs"] += 1
+        st["last_rc"] = rc
+        st["last_t"] = datetime.now(timezone.utc).isoformat()
+    for r in rows:
+        st = qs.get(r.get("query") or "")
+        if st:
+            st["traps" if r["trap"] else "deals"] += 1
+
+    promoted, retired = [], []
+    for q, st in qs.items():
+        if (st.get("origin") == "explore" and st.get("status") != "promoted"
+                and st.get("deals", 0) >= cfg["promote_min_deals"]):
+            st["status"] = "promoted"
+            promoted.append(q)
+        if (st.get("status") not in ("retired",) and st.get("runs", 0) >= cfg["retire_min_runs"]
+                and st.get("deals", 0) == 0 and st.get("traps", 0) == 0):
+            st["status"] = "retired"
+            retired.append(q)
+    for q in promoted:
+        print(f"[explore] PROMOTED to core: {q!r} — add it to your query list to lock it in")
+    for q in retired:
+        print(f"[stats] retired (0 hits in {qs[q]['runs']} runs): {q!r}")
+    return promoted, retired
 
 
 def get_token():
@@ -351,20 +619,24 @@ def evaluate_core(item, karat, grams, spot24, cfg, title_text=None, photos=None,
     verify = (not is_trap) and (under_by >= 0.40 or mixed)
 
     if photos is None:
-        photos = 1 + len(item.get("thumbnailImages") or item.get("additionalImages") or [])
+        # additionalImages is the real gallery count; thumbnailImages is ~always a
+        # single thumb, which made every fast-path listing look like "2 photos"
+        photos = 1 + len(item.get("additionalImages") or item.get("thumbnailImages") or [])
     payout = page_per_g * grams * cfg["payout_pct"]
     seller = item.get("seller") or {}
     s_score = int(seller["feedbackScore"]) if seller.get("feedbackScore") is not None else None
     s_pct = float(seller["feedbackPercentage"]) if seller.get("feedbackPercentage") else None
 
-    # mixed-grade lot: we can't split the weight by karat from the listing, so the
-    # whole lot is priced at the LOWEST karat present (a conservative floor) and flagged
+    # mixed-grade items: excluded by default (currently steering clear of lots /
+    # multi-karat pieces) — flip exclude_mixed in settings.json / the dashboard to
+    # revert to the old behavior of pricing at the lowest-karat floor with a flag.
+    if mixed and cfg.get("exclude_mixed", True):
+        return None
     mixed_note = ""
     if mixed:
         ks = "+".join(f"{k}k" for k in sorted(mixed_karats))
         mixed_note = (f"mixed lot ({ks}) — priced at {karat}k floor since the listing "
-                      f"doesn't break down weight by grade; real value is higher only if "
-                      f"most of it is the higher karat — check the breakdown")
+                      f"doesn't break down weight by grade")
 
     # positive signals: what makes a genuine deal look trustworthy (learning aid, not proof)
     why = []
@@ -470,7 +742,7 @@ def load_seen(path):
 def save_seen(path, seen):
     try:
         with open(path, "w") as f:
-            json.dump(sorted(seen), f)
+            json.dump(sorted(seen)[-5000:], f)   # cap: alerted-id memory never bloats the cache
     except Exception:
         pass
 
@@ -531,6 +803,15 @@ def send_email(deals):
 
 
 def append_history(cfg, spot_oz, prices, deals, traps, price_src=""):
+    # per-query hit tracking: only queries with at least one deal or trap this run
+    # are logged, so this stays compact — sum across history to see which queries
+    # actually earn their call budget vs. which are dead weight.
+    by_query = {}
+    for d in deals:
+        by_query.setdefault(d.get("query") or "?", {"deals": 0, "traps": 0})["deals"] += 1
+    for t in traps:
+        by_query.setdefault(t.get("query") or "?", {"deals": 0, "traps": 0})["traps"] += 1
+
     rec = {
         "t": datetime.now(timezone.utc).isoformat(),
         "spot_oz": round(spot_oz, 2),
@@ -543,6 +824,7 @@ def append_history(cfg, spot_oz, prices, deals, traps, price_src=""):
         "profit": round(sum(d["profit"] for d in deals if d["profit"] > 0), 2),
         "by_karat": {k: sum(1 for d in deals if d["karat"] == k)
                      for k in ["10K", "14K", "18K", "22K", "24K"]},
+        "by_query": by_query,
     }
     hist = []
     try:
@@ -555,6 +837,18 @@ def append_history(cfg, spot_oz, prices, deals, traps, price_src=""):
     with open(cfg["history_file"], "w") as f:
         json.dump(hist, f)
     return hist
+
+
+def _apply_trust(row, cfg):
+    """Nudge the score by your accumulated 👍/👎 trust in this query and seller.
+    Bounded by fb_weight_span (±15% default), never flips a trap, and the raw
+    melt score is preserved as base_score so the UI can show both honestly."""
+    qm = cfg.get("_query_mult", {}).get(row.get("query", ""), 1.0)
+    sm = cfg.get("_seller_mult", {}).get(row.get("seller_user", ""), 1.0)
+    if qm == 1.0 and sm == 1.0:
+        return
+    row["base_score"] = row["score"]
+    row["score"] = max(0, min(100, round(row["score"] * qm * sm)))
 
 
 def collect(token, queries, spot24, cfg, sort, deep):
@@ -574,8 +868,11 @@ def collect(token, queries, spot24, cfg, sort, deep):
                 seen.add(iid)
                 row = evaluate(item, spot24, cfg)
                 if row:
+                    row["query"] = q
+                    _apply_trust(row, cfg)
                     rows.append(row)
                 elif deep and cfg["deep_scan"] and needs_description(item, cfg):
+                    item["_src_query"] = q
                     candidates.append(item)
 
     if deep and cfg["deep_scan"] and candidates:
@@ -591,6 +888,8 @@ def collect(token, queries, spot24, cfg, sort, deep):
                 continue
             row = evaluate_deep(item, detail, spot24, cfg)
             if row:
+                row["query"] = item.get("_src_query", "")
+                _apply_trust(row, cfg)
                 rows.append(row); recovered += 1
             time.sleep(0.1)
         print(f"  recovered {recovered} extra deal(s) from descriptions")
@@ -616,6 +915,13 @@ def main():
 
     token = get_token()
 
+    # feedback learning: your 👍/👎 taps -> trust weights + seller blocklist
+    qmult, smult, sblock, n_fb = load_feedback(CONFIG)
+    CONFIG["_query_mult"], CONFIG["_seller_mult"], CONFIG["_seller_block"] = qmult, smult, sblock
+    if n_fb:
+        print(f"[learning] {n_fb} feedback taps -> {len(qmult)} query / {len(smult)} seller "
+              f"weights · {len(sblock)} seller(s) blocked")
+
     if SCOUT_MODE == "fast":
         # quick pass over priority categories, newest first, alerts only
         rows = collect(token, CONFIG["fast_queries"], spot24, CONFIG, sort="newlyListed", deep=False)
@@ -624,8 +930,13 @@ def main():
         send_alerts(deals)
         return
 
-    # full sweep: both cheapest-first and newest-first so nothing slips through
-    rows = collect(token, CONFIG["queries"], spot24, CONFIG, sort=["price", "newlyListed"], deep=True)
+    # budget-aware selection: rank core queries, reserve exploration slots
+    qstats = load_query_stats(CONFIG)
+    core_q, explore_q, sorts = select_queries(CONFIG, qstats, qmult)
+    ran = core_q + explore_q
+    rows = collect(token, ran, spot24, CONFIG, sort=sorts, deep=True)
+    promoted, retired = update_query_stats(CONFIG, qstats, ran, rows)
+    save_query_stats(CONFIG, qstats)
     deals = sorted([r for r in rows if not r["trap"]], key=lambda r: r["score"], reverse=True)
     traps = sorted([r for r in rows if r["trap"]], key=lambda r: r["under_pct"], reverse=True)
 
@@ -660,12 +971,19 @@ def main():
             "max_price": CONFIG["max_price"], "min_feedback_pct": CONFIG["min_feedback_pct"],
             "alert_min_score": ALERT["min_score"], "queries": CONFIG["queries"],
         },
+        "learning": {
+            "feedback_events": n_fb,
+            "sellers_blocked": sorted(sblock),
+            "queries_ran": len(ran), "explored": explore_q,
+            "promoted": promoted, "retired": retired,
+            "sorts": sorts,
+        },
     }
     with open(CONFIG["json_out"], "w") as f:
         json.dump(payload, f, indent=2)
 
     cols = ["score","under_pct","karat","grams","price","ship","all_in_per_g",
-            "page_per_g","profit","seller_pct","offer","title","url"]
+            "page_per_g","profit","seller_pct","offer","query","title","url"]
     for path, data in [(CONFIG["deals_csv"], deals), (CONFIG["traps_csv"], traps)]:
         with open(path, "w", newline="") as f:
             w = csv.DictWriter(f, fieldnames=cols, extrasaction="ignore")

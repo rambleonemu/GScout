@@ -32,7 +32,6 @@
     "22k gold chain grams",
     "22k gold bracelet grams",
     "24k gold scrap grams",
-    "solid gold scrap lot grams",
     "585 gold grams",
     "750 gold grams",
     "417 gold grams",
@@ -72,7 +71,6 @@
     "10k gold coin pendant grams",
     "14k gold signet ring grams",
     "gold charm grams",
-    "gold jewelry lot grams",
     "gold brooch grams",
     "gold bangle grams",
     "gold anklet grams",
@@ -88,5 +86,18 @@
     "10k gold scrap grams",
     "18k gold scrap grams",
     "14k gold chain grams"
-  ]
+  ],
+  "daily_call_budget": 4500,
+  "runs_per_day": 0,
+  "sort_mode": "alternate",
+  "exclude_mixed": true,
+  "explore_enabled": true,
+  "explore_frac": 0.12,
+  "explore_pool": [],
+  "promote_min_deals": 3,
+  "retire_min_runs": 25,
+  "exploit_share": 0.7,
+  "fb_weight_span": 0.15,
+  "fb_half_life_days": 45,
+  "fb_seller_block_bad": 2
 }
