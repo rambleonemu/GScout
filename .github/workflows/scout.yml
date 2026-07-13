@@ -28,6 +28,7 @@ jobs:
             seen_ids.json
             history.json
             query_stats.json
+            results.json
           key: scout-state-${{ github.run_id }}
           restore-keys: |
             scout-state-
