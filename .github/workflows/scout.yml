@@ -27,6 +27,7 @@ jobs:
           path: |
             seen_ids.json
             history.json
+            query_stats.json
           key: scout-state-${{ github.run_id }}
           restore-keys: |
             scout-state-
@@ -82,6 +83,8 @@ jobs:
           cp results.json site/
           cp settings.json site/ 2>/dev/null || echo "{}" > site/settings.json
           cp history.json site/ 2>/dev/null || echo "[]" > site/history.json
+          cp query_stats.json site/ 2>/dev/null || echo '{"meta":{"run_counter":0},"queries":{}}' > site/query_stats.json
+          cp feedback.json site/ 2>/dev/null || echo "[]" > site/feedback.json
           for img in GScout_Mascot.png GScout_Favicon.png GScout_Icon.png; do
             [ -f "$img" ] && cp "$img" site/ || echo "skipping $img (not found)"
           done
