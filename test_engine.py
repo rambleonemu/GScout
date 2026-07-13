@@ -124,6 +124,38 @@ check("hist: new_deals recorded", rec["new_deals"] == 2)
 check("hist: by_query stripped from old records", "by_query" not in hist[0] and "by_query" in hist[-1])
 os.remove("_test_hist.json")
 
+# ---------- crash-proofing ----------
+cfgX = copy.deepcopy(gs.CONFIG); cfgX["feedback_file"] = "_test_fbx.json"
+json.dump([
+    {"id":"ok","query":"q1","seller":"s1","verdict":"good","ts":time.time()*1000},
+    {"id":"bad_ts","query":"q2","seller":"s2","verdict":"bad","category":"plated","ts":"garbage"},
+    "not even a dict", {"verdict":"bad"}, None,
+], open("_test_fbx.json","w"))
+try:
+    qmx, smx, bx, nx = gs.load_feedback(cfgX)
+    check("crashproof: malformed feedback events skipped, run survives", "q1" in qmx and "q2" not in qmx)
+except Exception as e:
+    check("crashproof: malformed feedback events skipped, run survives", False, str(e))
+os.remove("_test_fbx.json")
+
+# stale-spot fallback: fresh history record accepted, old one refused
+from datetime import datetime, timezone, timedelta
+gs.CONFIG["history_file"] = "_test_spot.json"
+fresh_t = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+json.dump([{"t": fresh_t, "spot_oz": 4100.0, "price_src": "gold-api.com"}], open("_test_spot.json","w"))
+import unittest.mock as mock
+with mock.patch.object(gs.requests, "get", side_effect=Exception("net down")):
+    p, src = gs.live_spot_per_oz()
+    check("failsafe: stale spot used when all APIs down", p == 4100.0 and "stale" in src, f"{p} {src}")
+old_t = (datetime.now(timezone.utc) - timedelta(hours=48)).isoformat()
+json.dump([{"t": old_t, "spot_oz": 4100.0, "price_src": "gold-api.com"}], open("_test_spot.json","w"))
+with mock.patch.object(gs.requests, "get", side_effect=Exception("net down")):
+    try:
+        gs.live_spot_per_oz(); check("failsafe: too-old spot refused (crash correctly)", False)
+    except RuntimeError:
+        check("failsafe: too-old spot refused (crash correctly)", True)
+os.remove("_test_spot.json")
+
 for f in ("_test_qs.json",):
     if os.path.exists(f): os.remove(f)
 

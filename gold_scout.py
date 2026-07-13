@@ -96,6 +96,7 @@ CONFIG = {
     "retire_min_runs": 25,      # a query this many runs old with 0 deals AND 0 traps -> retired
     "starvation_cap": 6,        # rotation cadence hint (informational)
     "exploit_share": 0.7,       # share of core slots locked to proven top performers
+    "spot_stale_max_hours": 24, # how old a cached spot price may be during API outages
     # term lists the auto-explorer combines when your own pool runs dry
     "explore_karats": ["10k", "14k", "18k"],
     "explore_items": ["wedding band", "hoop earrings", "figaro chain", "box chain",
@@ -290,7 +291,7 @@ def load_settings(cfg):
               "daily_call_budget", "runs_per_day", "fb_half_life_days",
               "fb_weight_span", "fb_seller_block_bad", "explore_frac",
               "promote_min_deals", "retire_min_runs", "starvation_cap", "exploit_share",
-              "history_max"):
+              "history_max", "spot_stale_max_hours"):
         if isinstance(s.get(k), (int, float)):
             cfg[k] = s[k]
     for k in ("exclude_mixed", "explore_enabled"):
@@ -351,19 +352,24 @@ def load_feedback(cfg):
     half = max(1.0, float(cfg["fb_half_life_days"])) * 86400
     qg, qb, sg, sb = {}, {}, {}, {}
     for e in events:
-        if not isinstance(e, dict) or e.get("verdict") not in ("good", "bad"):
+        # defensive per-event parsing: one malformed tap (bad ts, wrong types) must
+        # never crash the sweep — skip it and keep learning from the rest
+        try:
+            if not isinstance(e, dict) or e.get("verdict") not in ("good", "bad"):
+                continue
+            ts = float(e.get("ts", now)) / (1000 if float(e.get("ts", now)) > 1e11 else 1)
+            w = 0.5 ** (max(0.0, now - ts) / half)
+            q, s = (e.get("query") or "").strip(), (e.get("seller") or "").strip()
+            if e["verdict"] == "good":
+                if q: qg[q] = qg.get(q, 0) + w
+                if s: sg[s] = sg.get(s, 0) + w
+            else:
+                eff = cfg["fb_effects"].get(e.get("category") or "other",
+                                            {"query": 0.0, "seller": 0.0})
+                if q and eff.get("query"):  qb[q] = qb.get(q, 0) + w * eff["query"]
+                if s and eff.get("seller"): sb[s] = sb.get(s, 0) + w * eff["seller"]
+        except Exception:
             continue
-        ts = float(e.get("ts", now)) / (1000 if float(e.get("ts", now)) > 1e11 else 1)
-        w = 0.5 ** (max(0.0, now - ts) / half)
-        q, s = (e.get("query") or "").strip(), (e.get("seller") or "").strip()
-        if e["verdict"] == "good":
-            if q: qg[q] = qg.get(q, 0) + w
-            if s: sg[s] = sg.get(s, 0) + w
-        else:
-            eff = cfg["fb_effects"].get(e.get("category") or "other",
-                                        {"query": 0.0, "seller": 0.0})
-            if q and eff.get("query"):  qb[q] = qb.get(q, 0) + w * eff["query"]
-            if s and eff.get("seller"): sb[s] = sb.get(s, 0) + w * eff["seller"]
 
     span = max(0.0, min(0.5, float(cfg["fb_weight_span"])))
     def mults(good, bad):
@@ -1104,7 +1110,29 @@ def live_spot_per_oz():
     except Exception as e:
         print(f"[price] Yahoo Finance failed: {e}")
 
-    raise RuntimeError("All 3 gold price sources failed — check network and APIs")
+    # --- Source 4: last known spot from our own history, if fresh enough ---
+    # A total outage of all three live sources shouldn't kill the sweep: gold moves
+    # little enough intraday that recent spot still prices melt margins usefully.
+    # Window is spot_stale_max_hours (settings-controllable); label makes it visible
+    # in logs and chart tooltips so a stale price is never mistaken for live.
+    try:
+        with open(CONFIG["history_file"]) as f:
+            hist = json.load(f)
+        for h in reversed(hist):
+            if not h.get("spot_oz") or h.get("price_src", "").startswith("history"):
+                continue   # never chain stale-on-stale
+            age_h = (datetime.now(timezone.utc)
+                     - datetime.fromisoformat(h["t"])).total_seconds() / 3600
+            if age_h <= CONFIG["spot_stale_max_hours"]:
+                print(f"[price] ALL live sources down — using last known spot "
+                      f"${h['spot_oz']:.2f}/oz from history ({age_h:.1f}h old)")
+                return float(h["spot_oz"]), f"history ({age_h:.0f}h stale)"
+            break   # newest usable record is already too old; stop looking
+    except Exception as e:
+        print(f"[price] history fallback failed: {e}")
+
+    raise RuntimeError("All 3 gold price sources failed and no fresh history — "
+                       "check network and APIs")
 
 
 if __name__ == "__main__":
