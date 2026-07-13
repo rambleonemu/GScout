@@ -89,7 +89,7 @@
   ],
   "daily_call_budget": 4500,
   "runs_per_day": 0,
-  "sort_mode": "alternate",
+  "sort_mode": "both",
   "exclude_mixed": true,
   "explore_enabled": true,
   "explore_frac": 0.12,
@@ -99,5 +99,6 @@
   "exploit_share": 0.7,
   "fb_weight_span": 0.15,
   "fb_half_life_days": 45,
-  "fb_seller_block_bad": 2
+  "fb_seller_block_bad": 2,
+  "history_max": 10000
 }

@@ -289,7 +289,8 @@ def load_settings(cfg):
               "min_feedback_pct", "min_feedback_score", "results_per_query",
               "daily_call_budget", "runs_per_day", "fb_half_life_days",
               "fb_weight_span", "fb_seller_block_bad", "explore_frac",
-              "promote_min_deals", "retire_min_runs", "starvation_cap", "exploit_share"):
+              "promote_min_deals", "retire_min_runs", "starvation_cap", "exploit_share",
+              "history_max"):
         if isinstance(s.get(k), (int, float)):
             cfg[k] = s[k]
     for k in ("exclude_mixed", "explore_enabled"):
@@ -406,7 +407,9 @@ def estimate_runs_per_day(cfg):
     try:
         with open(cfg["history_file"]) as f:
             hist = json.load(f)
-        ts = [datetime.fromisoformat(h["t"]).timestamp() for h in hist[-50:]]
+        # median of the last 24 gaps: adapts to a cron cadence change within ~half a
+        # day, and the median shrugs off outlier gaps from manual "run now" clicks
+        ts = [datetime.fromisoformat(h["t"]).timestamp() for h in hist[-25:]]
         gaps = sorted(b - a for a, b in zip(ts, ts[1:]) if 60 < b - a < 6 * 3600)
         if len(gaps) >= 5:
             return max(1, min(200, round(86400 / gaps[len(gaps) // 2])))
@@ -538,6 +541,9 @@ def get_token():
     return r.json()["access_token"]
 
 
+API_ERRORS = {"count": 0, "quota": 0}   # non-200s this run; quota = HTTP 429s specifically
+
+
 def search(token, query, limit, sort="price"):
     out, offset = [], 0
     headers = {"Authorization": f"Bearer {token}", "X-EBAY-C-MARKETPLACE-ID": "EBAY_US"}
@@ -550,6 +556,9 @@ def search(token, query, limit, sort="price"):
                               "itemLocationCountry:US",
                     "sort": sort, "limit": page, "offset": offset}, timeout=30)
         if r.status_code != 200:
+            API_ERRORS["count"] += 1
+            if r.status_code == 429:
+                API_ERRORS["quota"] += 1
             print(f"  ! {query!r} -> HTTP {r.status_code}: {r.text[:120]}"); break
         items = r.json().get("itemSummaries", []) or []
         out.extend(items)
@@ -802,7 +811,7 @@ def send_email(deals):
     print(f"emailed {len(keep)} deals to {EMAIL['to']}")
 
 
-def append_history(cfg, spot_oz, prices, deals, traps, price_src=""):
+def append_history(cfg, spot_oz, prices, deals, traps, price_src="", new_deals=0, api_errors=0):
     # per-query hit tracking: only queries with at least one deal or trap this run
     # are logged, so this stays compact — sum across history to see which queries
     # actually earn their call budget vs. which are dead weight.
@@ -818,8 +827,12 @@ def append_history(cfg, spot_oz, prices, deals, traps, price_src=""):
         "price_src": price_src,
         "p14": prices.get("14K"),
         "deals": len(deals),
+        "new_deals": new_deals,
+        "api_errors": api_errors,
         "traps": len(traps),
         "avg_under": round(sum(d["under_pct"] for d in deals) / len(deals), 1) if deals else 0,
+        "avg_score": round(sum(d["score"] for d in deals) / len(deals), 1) if deals else 0,
+        "avg_profit": round(sum(d["profit"] for d in deals) / len(deals), 2) if deals else 0,
         "best": max((d["score"] for d in deals), default=0),
         "profit": round(sum(d["profit"] for d in deals if d["profit"] > 0), 2),
         "by_karat": {k: sum(1 for d in deals if d["karat"] == k)
@@ -834,6 +847,11 @@ def append_history(cfg, spot_oz, prices, deals, traps, price_src=""):
         hist = []
     hist.append(rec)
     hist = hist[-cfg["history_max"]:]
+    # keep long-range history light: per-query detail only matters for recent
+    # curation — cumulative totals live in query_stats.json — so strip it from
+    # everything but the newest 1500 records
+    for old in hist[:-1500]:
+        old.pop("by_query", None)
     with open(cfg["history_file"], "w") as f:
         json.dump(hist, f)
     return hist
@@ -940,8 +958,9 @@ def main():
     deals = sorted([r for r in rows if not r["trap"]], key=lambda r: r["score"], reverse=True)
     traps = sorted([r for r in rows if r["trap"]], key=lambda r: r["under_pct"], reverse=True)
 
-    # load previous results to track price changes across runs
-    prev_prices = {}
+    # load previous results to track price changes across runs (results.json is
+    # cached run-to-run, so this is genuinely the last run — not a stale repo copy)
+    prev, prev_prices = {}, {}
     try:
         with open(CONFIG["json_out"]) as f:
             prev = json.load(f)
@@ -950,12 +969,43 @@ def main():
                     prev_prices[d["id"]] = d.get("price")
     except Exception:
         pass
-    # attach prev_price so the dashboard can show "was $X → now $Y"
-    for row in deals + traps:
-        pid = prev_prices.get(row["id"])
-        row["prev_price"] = round(pid, 2) if pid is not None and pid != row["price"] else None
 
-    hist = append_history(CONFIG, spot_oz, prices, deals, traps, price_src=price_src)
+    # ---- fail-safe: a 0-deal 0-trap sweep is almost always quota/API failure,
+    # not a genuinely empty market. Carry the last good listings forward (flagged
+    # as carried) so the dashboard stays usable instead of wiping to zero.
+    carried_from = None
+    if not deals and not traps and (prev.get("deals") or prev.get("traps")):
+        deals = prev.get("deals") or []
+        traps = prev.get("traps") or []
+        carried_from = prev.get("carried_from") or prev.get("updated")
+        why = (f"{API_ERRORS['quota']} quota (429) errors" if API_ERRORS["quota"]
+               else f"{API_ERRORS['count']} API errors" if API_ERRORS["count"]
+               else "no API errors — possibly genuinely empty")
+        print(f"[failsafe] sweep returned 0/0 ({why}) — carrying {len(deals)} deal(s) / "
+              f"{len(traps)} trap(s) forward from {carried_from}")
+        if not prev.get("carried_from"):     # first failed run of this outage only
+            notify("GScout sweep failed", f"0 results ({why}). Showing last good data "
+                   f"from {carried_from}. Retrying on schedule.", priority="high")
+
+    # attach prev_price so the dashboard can show "was $X → now $Y"
+    if not carried_from:
+        for row in deals + traps:
+            pid = prev_prices.get(row["id"])
+            row["prev_price"] = round(pid, 2) if pid is not None and pid != row["price"] else None
+
+    # new-deals-per-run: ids that weren't in the last *real* (non-carried) sweep
+    prev_ids = set(qstats["meta"].get("last_deal_ids") or [])
+    if carried_from:
+        new_count = 0                      # nothing new was actually found
+    else:
+        cur_ids = {d["id"] for d in deals if d.get("id")}
+        new_count = len(cur_ids - prev_ids) if prev_ids else len(cur_ids)
+        qstats["meta"]["last_deal_ids"] = sorted(cur_ids)[:3000]
+        save_query_stats(CONFIG, qstats)
+
+    hist = append_history(CONFIG, spot_oz, prices, deals if not carried_from else [],
+                          traps if not carried_from else [], price_src=price_src,
+                          new_deals=new_count, api_errors=API_ERRORS["count"])
 
     payload = {
         "updated": datetime.now(timezone.utc).isoformat(),
@@ -977,6 +1027,14 @@ def main():
             "queries_ran": len(ran), "explored": explore_q,
             "promoted": promoted, "retired": retired,
             "sorts": sorts,
+        },
+        "carried_from": carried_from,
+        "api_errors": dict(API_ERRORS),
+        "quota": {
+            "est_calls_run": len(ran) * len(sorts) * max(1, -(-CONFIG["results_per_query"] // 50))
+                             + CONFIG["max_detail_calls"],
+            "runs_per_day_est": estimate_runs_per_day(CONFIG),
+            "daily_budget": CONFIG["daily_call_budget"],
         },
     }
     with open(CONFIG["json_out"], "w") as f:

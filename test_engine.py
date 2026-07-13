@@ -106,6 +106,24 @@ cfg3["exclude_mixed"] = False
 r = gs.evaluate(item, 132.0, cfg3)
 check("mixed: allowed + floored when toggle off", r is not None and r["karat"] == "10K")
 
+# ---------- history metrics + trim behavior ----------
+cfgH = copy.deepcopy(gs.CONFIG)
+cfgH["history_file"] = "_test_hist.json"
+cfgH["history_max"] = 2000
+seed = [{"t":f"2026-01-01T00:{i%60:02d}:00+00:00","spot_oz":4000,"deals":1,"traps":0,
+         "avg_under":10,"best":50,"profit":5,"by_karat":{},"by_query":{"x":{"deals":1,"traps":0}}}
+        for i in range(1600)]
+json.dump(seed, open("_test_hist.json","w"))
+deals_fake = [{"query":"q1","trap":False,"under_pct":20,"score":80,"profit":100,"karat":"14K"},
+              {"query":"q1","trap":False,"under_pct":10,"score":60,"profit":50,"karat":"10K"}]
+hist = gs.append_history(cfgH, 4100.0, {"14K":77.0}, deals_fake, [], price_src="test", new_deals=2)
+rec = hist[-1]
+check("hist: avg_score recorded", rec["avg_score"] == 70.0, str(rec.get("avg_score")))
+check("hist: avg_profit recorded", rec["avg_profit"] == 75.0, str(rec.get("avg_profit")))
+check("hist: new_deals recorded", rec["new_deals"] == 2)
+check("hist: by_query stripped from old records", "by_query" not in hist[0] and "by_query" in hist[-1])
+os.remove("_test_hist.json")
+
 for f in ("_test_qs.json",):
     if os.path.exists(f): os.remove(f)
 

@@ -149,6 +149,9 @@
   .fbcats { display:flex; flex-wrap:wrap; gap:6px; align-items:center; padding:6px 10px 10px;
             font-size:11px; color:#a3a3a3; }
   .fbnote { padding:0 10px 8px; font-size:11px; color:#fb7185; opacity:.8; }
+  .chiprow { display:flex; flex-wrap:wrap; gap:4px; margin-bottom:6px; }
+  .chip.xs { font-size:9px; padding:2px 7px; }
+  .qwrap { overflow-x:auto; -webkit-overflow-scrolling:touch; }
   .qtable { width:100%; border-collapse:collapse; font-size:11px; }
   .qtable td, .qtable th { padding:3px 8px; text-align:left; border-bottom:1px solid #1a1a1a; color:#a3a3a3; }
   .qtable th { color:#525252; text-transform:uppercase; letter-spacing:1px; font-size:9px; }
@@ -191,7 +194,8 @@ const ui = LS.get("gdd_ui",{})||{};
 const F = Object.assign({karat:"All",minScore:0,minProfit:0,showTraps:false,
   hideSeen:false,showHidden:false,settingsOpen:false,
   sortBy:"score",   // "score" | "profit" | "age" | "pricedrop"
-  showTrends:true, showPrices:true, showEnded:false, showQueries:false, fbOpen:null}, ui.F||{});
+  showTrends:true, showPrices:true, showEnded:false, showQueries:false, fbOpen:null,
+  chartRange:"all", priceUnit:"oz", dealsMode:"total", trendMetric:"under"}, ui.F||{});
 const saveUI = ()=>{ ui.F=F; LS.set("gdd_ui",ui); };
 
 const SAMPLE = {
@@ -222,6 +226,28 @@ const FB_CATS = [["plated","plated / not solid"],["weight_karat","wrong weight/k
   ["overpriced","not profitable"],["style","not my style"],["other","other"]];
 const persistFB = ()=>{ LS.set("gdd_fb",FB); LS.set("gdd_fb_pending",FB_PENDING); };
 
+// ---- chart helpers: time ranges, karat price derivation, metric fallbacks ----
+const KARAT_PURITY={ "10K":0.417,"14K":0.585,"18K":0.750,"22K":0.916,"24K":0.999 };
+const karatPerG=(spotOz,k)=>spotOz/31.1035*(KARAT_PURITY[k]||1);
+function rangeMs(r){ return {"1d":864e5,"1w":7*864e5,"1mo":30*864e5,"1y":365*864e5}[r]||Infinity; }
+function histView(){
+  const cut=Date.now()-rangeMs(F.chartRange);
+  let v=HIST.filter(h=>h.t&&new Date(h.t).getTime()>=cut);
+  // downsample long ranges so the SVG stays light (~400 points max), always keep the newest
+  if(v.length>400){ const step=Math.ceil(v.length/400);
+    v=v.filter((_,i)=>i%step===0||i===v.length-1); }
+  return v;
+}
+function priceSeries(hv,unit){
+  return hv.map(h=>({t:h.t,price_src:h.price_src,
+    v:unit==="oz"?h.spot_oz:(Number.isFinite(h.spot_oz)?karatPerG(h.spot_oz,unit):null)}));
+}
+function trendVal(h,metric){
+  if(metric==="score")  return h.avg_score ?? null;                    // added mid-life: old runs skipped
+  if(metric==="profit") return h.avg_profit ?? (h.deals?+(h.profit/h.deals).toFixed(2):null);
+  return h.avg_under ?? null;
+}
+
 function scoreStyle(s){
   if(s>=75) return {c:"#34d399",l:"Excellent"};
   if(s>=50) return {c:"#a3e635",l:"Strong"};
@@ -229,8 +255,9 @@ function scoreStyle(s){
   return {c:"#a3a3a3",l:"Slim"};
 }
 function lineChart(hist, key, color, fmt_fn){
-  const pts=hist.map(h=>h[key]).filter(Number.isFinite);
-  if(!pts.length) return '<div class="now" style="color:#525252">no history yet</div>';
+  hist=hist.filter(h=>Number.isFinite(h[key]));   // keep records+points aligned (old runs may lack new metrics)
+  const pts=hist.map(h=>h[key]);
+  if(!pts.length) return '<div class="now" style="color:#525252">no data in this range yet</div>';
   const W=340,H=90,PL=44,PR=8,PT=8,PB=20;
   const min=Math.min(...pts),max=Math.max(...pts),span=(max-min)||1;
   const cx=i=>PL+(i/(pts.length-1||1))*(W-PL-PR);
@@ -242,11 +269,14 @@ function lineChart(hist, key, color, fmt_fn){
     {y:cy(max),label:fmt_fn(max)},
     {y:cy(min),label:fmt_fn(min)},
   ];
-  // x axis: first and last timestamps
+  // x axis: first and last timestamps — show dates when the window spans >48h
   const ts=hist.map(h=>h.t).filter(Boolean);
+  const longSpan=ts.length>=2&&(new Date(ts[ts.length-1])-new Date(ts[0]))>48*3600*1000;
+  const xfmt=t=>longSpan?new Date(t).toLocaleDateString([],{month:'short',day:'numeric'})
+                        :new Date(t).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
   const xLabels=ts.length>=2?[
-    {x:cx(0),label:new Date(ts[0]).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})},
-    {x:cx(pts.length-1),label:new Date(ts[ts.length-1]).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})},
+    {x:cx(0),label:xfmt(ts[0])},
+    {x:cx(pts.length-1),label:xfmt(ts[ts.length-1])},
   ]:[];
   // invisible hit targets for hover
   const hits=pts.map((v,i)=>{
@@ -327,7 +357,15 @@ function nextRun(){
   if(!DATA||!DATA.updated) return null;
   const last=new Date(DATA.updated);
   if(isNaN(last)) return null;
-  const interval=30; // minutes between scheduled runs (matches scout.yml cron + external pinger)
+  // interval: explicit setting wins if set, else measured from the real gaps in
+  // history (median of recent runs — same logic as the engine), else 30m bootstrap
+  let interval=30;
+  if(SET&&SET.runs_per_day>0) interval=Math.round(1440/SET.runs_per_day);
+  else if(HIST.length>=6){
+    const ts=HIST.slice(-25).map(h=>new Date(h.t).getTime());
+    const gaps=ts.slice(1).map((t,i)=>t-ts[i]).filter(g=>g>60e3&&g<6*3600e3).sort((a,b)=>a-b);
+    if(gaps.length>=5) interval=Math.round(gaps[Math.floor(gaps.length/2)]/60000);
+  }
   const next=new Date(last.getTime()+interval*60000);
   return next > new Date() ? next : new Date(new Date().getTime()+interval*60000);
 }
@@ -418,6 +456,7 @@ async function load(){
 function render(){
   const d=DATA, app=document.getElementById("app");
   TRUSTED=trustedSellers();
+  const HVIEW=histView();
   const trapList=(d.traps||[]).map(t=>Object.assign({trap:true},t));
   const pool=(F.showTraps ? d.deals.concat(trapList) : d.deals.slice());
 
@@ -483,6 +522,9 @@ function render(){
         <div class="lastrun">last run: <span id="lr">${lastRunStr()}</span></div>
         <div class="next">next ~<span id="cd">${countdownStr()}</span></div>
         <div class="next" style="margin-top:2px" title="Derived from the last successful sweep — the same signal healthchecks.io watches. Green under 45m, amber under 3h, red beyond.">heartbeat <span style="color:${hb.c}">●</span> <span style="color:${hb.c}">${hb.l}</span>${d._sample?"":` · ${hbAgo}`}</div>
+        ${d.quota?(()=>{const pace=d.quota.est_calls_run*d.quota.runs_per_day_est, pct=pace/d.quota.daily_budget,
+          qc=pct>1?"#fb7185":pct>0.9?"#fcd34d":"#34d399";
+          return `<div class="next" style="margin-top:2px" title="Estimated eBay API usage at the current cadence vs your daily budget. ${d.api_errors&&d.api_errors.quota?d.api_errors.quota+' quota (429) errors last run!':''}">quota <span style="color:${qc}">~${pace.toLocaleString()}/${d.quota.daily_budget.toLocaleString()} calls/day</span>${d.api_errors&&d.api_errors.count?` · <span style="color:#fb7185">${d.api_errors.count} API error(s) last run</span>`:""}</div>`})():""}
         <div id="runmsg" class="note" style="text-align:right"></div></div>
     </header>
 
@@ -499,13 +541,32 @@ function render(){
 
     <section>
       <div class="sec-hdr" onclick="setF('showTrends',!F.showTrends)">
-        <div class="label">Trends · last ${HIST.length||0} runs</div>
+        <div class="label">Trends · ${HVIEW.length} of ${HIST.length||0} runs</div>
         <span class="sec-toggle">${F.showTrends?"▲ collapse":"▼ expand"}</span>
       </div>
-      ${F.showTrends?`<div class="charts">
-        <div class="card"><h3>Gold price ($/oz)</h3>${lineChart(HIST,'spot_oz',"#fcd34d",v=>'$'+Math.round(v).toLocaleString())}<div class="now">${fmt(d.spot_per_oz)}/oz</div></div>
-        <div class="card"><h3>Deals per run</h3>${lineChart(HIST,'deals',"#34d399",v=>v+' deals')}<div class="now">${d.deals.length} now</div></div>
-        <div class="card"><h3>Avg discount</h3>${lineChart(HIST,'avg_under',"#60a5fa",v=>v+'%')}<div class="now">${avgUnder}% now</div></div>
+      ${F.showTrends?`
+      <div class="row" style="margin:2px 0 10px">
+        <span class="label">Range</span>
+        ${[["all","all time"],["1y","year"],["1mo","month"],["1w","week"],["1d","24h"]].map(([v,l])=>
+          `<button class="chip ${F.chartRange===v?"on":""}" onclick="setF('chartRange','${v}')">${l}</button>`).join("")}
+      </div>
+      <div class="charts">
+        <div class="card"><h3>Gold price</h3>
+          <div class="chiprow">${[["oz","$/oz"],["10K","10K/g"],["14K","14K/g"],["18K","18K/g"],["22K","22K/g"],["24K","24K/g"]].map(([v,l])=>
+            `<button class="chip xs ${F.priceUnit===v?"on":""}" onclick="setF('priceUnit','${v}')">${l}</button>`).join("")}</div>
+          ${lineChart(priceSeries(HVIEW,F.priceUnit),'v',"#fcd34d",v=>'$'+(F.priceUnit==="oz"?Math.round(v).toLocaleString():v.toFixed(2)))}
+          <div class="now">${F.priceUnit==="oz"?fmt(d.spot_per_oz)+"/oz":fmt(karatPerG(d.spot_per_oz,F.priceUnit))+"/g "+F.priceUnit}</div></div>
+        <div class="card"><h3>Deals per run</h3>
+          <div class="chiprow">${[["total","total live"],["new","new found"]].map(([v,l])=>
+            `<button class="chip xs ${F.dealsMode===v?"on":""}" onclick="setF('dealsMode','${v}')">${l}</button>`).join("")}</div>
+          ${lineChart(HVIEW.map(h=>({t:h.t,v:F.dealsMode==="new"?(h.new_deals??null):h.deals})),'v',"#34d399",v=>v+(F.dealsMode==="new"?' new':' deals'))}
+          <div class="now">${F.dealsMode==="new"?((HVIEW.length&&HVIEW[HVIEW.length-1].new_deals!=null?HVIEW[HVIEW.length-1].new_deals:"—")+" new last run"):d.deals.length+" now"}</div></div>
+        <div class="card"><h3>${({under:"Avg discount",score:"Avg score",profit:"Avg profit/deal"})[F.trendMetric]}</h3>
+          <div class="chiprow">${[["under","discount %"],["score","score"],["profit","profit $"]].map(([v,l])=>
+            `<button class="chip xs ${F.trendMetric===v?"on":""}" onclick="setF('trendMetric','${v}')">${l}</button>`).join("")}</div>
+          ${lineChart(HVIEW.map(h=>({t:h.t,v:trendVal(h,F.trendMetric)})),'v',"#60a5fa",
+            v=>F.trendMetric==="under"?v.toFixed(1)+"%":F.trendMetric==="profit"?"$"+Math.round(v):v.toFixed(0))}
+          <div class="now">${F.trendMetric==="under"?avgUnder+"% now":""}</div></div>
         <div class="card"><h3>Live deals by karat</h3>${barChart(byKarat)}<div class="now">${d.deals.length} total</div></div>
       </div>`:""}
     </section>
@@ -562,6 +623,8 @@ function render(){
       <div class="label" style="margin:14px 0 8px">Quota & learning · the engine fits searches inside your real eBay budget</div>
       <div class="row" style="margin-bottom:10px">
         <div class="ctl"><span>eBay calls/day budget</span><input id="s_budget" type="number" step="100" value="${SET.daily_call_budget||4500}"></div>
+        <div class="ctl"><span>Runs per day (0 = auto)</span><input id="s_rpd" type="number" step="1" min="0" value="${SET.runs_per_day||0}"></div>
+        <div class="ctl"><span>History depth (runs kept)</span><input id="s_histmax" type="number" step="500" value="${SET.history_max||10000}"></div>
         <div class="ctl"><span>Feedback strength %</span><input id="s_fbspan" type="number" step="1" min="0" max="50" value="${Math.round((SET.fb_weight_span??0.15)*100)}"></div>
         <label class="toggle" style="align-self:end"><input type="checkbox" id="s_nomixed" ${SET.exclude_mixed!==false?"checked":""}> exclude mixed-karat / lots</label>
       </div>
@@ -582,6 +645,9 @@ function render(){
       <div class="row" style="margin-bottom:8px">
         <button class="btn" onclick="saveSettings()">Save</button>
         <button class="btn ghost" onclick="copySettings()">Copy JSON</button>
+        <button class="btn ghost sm" onclick="exportLocal()" title="Download your bought log, saved/seen/hidden triage, and feedback — everything stored only in this browser">⬇ backup my data</button>
+        <button class="btn ghost sm" onclick="document.getElementById('importfile').click()" title="Restore a backup file">⬆ restore</button>
+        <input type="file" id="importfile" accept=".json" style="display:none" onchange="importLocal(this)">
         <span id="savemsg" class="note"></span>
       </div>
       <details><summary class="note" style="cursor:pointer">One-tap auto-save setup (optional GitHub token)</summary>
@@ -594,6 +660,7 @@ function render(){
     </section>
 
     ${d._sample?`<div class="empty" style="margin-bottom:12px;border-color:rgba(180,120,10,.4);color:#fcd34d;font-size:11px;padding:10px">Showing sample data until the scout writes results.json.</div>`:""}
+    ${d.carried_from?`<div class="empty" style="margin-bottom:12px;border-color:rgba(180,120,10,.4);color:#fcd34d;font-size:11px;padding:10px">⚠ Last sweep returned nothing (likely eBay quota/API hiccup) — showing the last good results from ${new Date(d.carried_from).toLocaleString([],{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})}. Prices/availability may have shifted; the engine keeps retrying on schedule.</div>`:""}
     ${d.traps_count>0&&!F.showTraps?`<div class="traps">⚠ ${d.traps_count} likely trap(s) hidden — flip "show traps" to inspect</div>`:""}
 
     <section>
@@ -625,12 +692,12 @@ function render(){
       </div>
       ${F.showQueries?`
         ${DATA.learning?`<div class="note" style="margin:4px 0 8px;color:#737373">Last run: ${DATA.learning.queries_ran} searches (${(DATA.learning.sorts||[]).join("+")})${(DATA.learning.explored||[]).length?` · explored: ${DATA.learning.explored.map(q=>`"${q}"`).join(", ")}`:""}${(DATA.learning.promoted||[]).length?` · <span style="color:#34d399">promoted: ${DATA.learning.promoted.join(", ")}</span>`:""}${DATA.learning.feedback_events?` · learning from ${DATA.learning.feedback_events} taps`:""}</div>`:""}
-        <table class="qtable"><tr><th>search</th><th>runs</th><th>deals</th><th>traps</th><th>hit rate</th></tr>
+        <div class="qwrap"><table class="qtable"><tr><th>search</th><th>runs</th><th>deals</th><th>traps</th><th>hit rate</th></tr>
         ${Object.entries(QSTATS.queries).sort((a,b)=>(b[1].deals||0)-(a[1].deals||0)).slice(0,60).map(([q,s])=>
           `<tr><td>${q}${s.origin==="explore"?`<span class="qbadge ex">explore</span>`:""}${s.status==="promoted"?`<span class="qbadge pr">promoted</span>`:""}${s.status==="retired"?`<span class="qbadge rt">retired</span>`:""}</td>
            <td>${s.runs||0}</td><td>${s.deals||0}</td><td>${s.traps||0}</td>
            <td>${s.runs?((s.deals||0)/s.runs).toFixed(2):"—"}/run</td></tr>`).join("")}
-        </table>
+        </table></div>
         <div class="note" style="margin-top:6px;color:#525252">Retired searches stopped earning their calls; re-add one to the query list to revive it. Promoted explorers already compete with your core list — add them there to lock them in.</div>
       `:""}
     </section>`:""}
@@ -809,6 +876,39 @@ async function flushFeedback(){
 }
 function fbmsg(t,c){ const e=document.getElementById("fbmsg"); if(e){ e.textContent=t; e.style.color=c||"#737373"; } }
 
+function exportLocal(){
+  const dump={_gscout_backup:1, exported:new Date().toISOString(),
+    seen:[...SEEN], hidden:[...HIDDEN], saved:[...SAVED], known:[...KNOWN],
+    bought:BOUGHT, lastseen:LASTSEEN, ended:ENDED, fb:FB, fb_pending:FB_PENDING, ui};
+  const a=document.createElement("a");
+  a.href=URL.createObjectURL(new Blob([JSON.stringify(dump,null,1)],{type:"application/json"}));
+  a.download=`gscout-backup-${new Date().toISOString().slice(0,10)}.json`;
+  a.click(); URL.revokeObjectURL(a.href);
+  msg("backup downloaded — keep it somewhere safe","#34d399");
+}
+function importLocal(input){
+  const f=input.files&&input.files[0]; if(!f) return;
+  const rd=new FileReader();
+  rd.onload=()=>{ try{
+    const d=JSON.parse(rd.result);
+    if(!d._gscout_backup) throw new Error("not a GScout backup");
+    // merge (union/latest-wins) so restoring an old backup never erases newer activity
+    (d.seen||[]).forEach(x=>SEEN.add(x)); (d.hidden||[]).forEach(x=>HIDDEN.add(x));
+    (d.saved||[]).forEach(x=>SAVED.add(x)); (d.known||[]).forEach(x=>KNOWN.add(x));
+    BOUGHT=Object.assign({},d.bought||{},BOUGHT);
+    LASTSEEN=Object.assign({},d.lastseen||{},LASTSEEN);
+    ENDED=Object.assign({},d.ended||{},ENDED);
+    Object.entries(d.fb||{}).forEach(([id,e])=>{ if(!FB[id]||((e.ts||0)>(FB[id].ts||0))) FB[id]=e; });
+    const have=new Set(FB_PENDING.map(e=>e.id+":"+e.ts));
+    (d.fb_pending||[]).forEach(e=>{ if(!have.has(e.id+":"+e.ts)) FB_PENDING.push(e); });
+    persist(); persistFB(); if(FB_PENDING.length) scheduleFBFlush();
+    msg(`restored — ${Object.keys(d.bought||{}).length} buys, ${(d.saved||[]).length} saved merged in`,"#34d399");
+    render();
+  }catch(e){ msg("restore failed: "+e.message,"#fb7185"); }
+  input.value=""; };
+  rd.readAsText(f);
+}
+
 function rmsgSettings(){}
 function gatherSettings(){
   const lines=document.getElementById("s_queries").value.split("\n").map(s=>s.trim()).filter(Boolean);
@@ -833,6 +933,8 @@ function gatherSettings(){
     promote_min_deals:v("s_promote",3),
     retire_min_runs:v("s_retire",25),
     fb_weight_span:v("s_fbspan",15)/100,
+    runs_per_day:v("s_rpd",0),
+    history_max:v("s_histmax",10000),
   });
 }
 function setSortMode(m){ SET._sort_mode_ui=m; SET.sort_mode=m; render(); }
