@@ -28,7 +28,6 @@ CONFIG = {
     "payout_pct":     1.00,   # your buyer pays the full listed gold price (100% of melt)
     "trap_under_pct": 0.50,   # more than this far under price = likely fake/misweighed -> hidden
     "tax_pct":        0.0,    # sales tax you pay buying on eBay
-    "max_price":      2000,
     "min_feedback_pct":   96.0,  # skip sellers below this positive-feedback %
     "min_feedback_score": 10,    # skip brand-new sellers below this many ratings
     "queries": [
@@ -286,7 +285,7 @@ def load_settings(cfg):
             s = json.load(f)
     except Exception:
         return
-    for k in ("payout_pct", "trap_under_pct", "max_price", "max_detail_calls",
+    for k in ("payout_pct", "trap_under_pct", "max_detail_calls",
               "min_feedback_pct", "min_feedback_score", "results_per_query",
               "daily_call_budget", "runs_per_day", "fb_half_life_days",
               "fb_weight_span", "fb_seller_block_bad", "explore_frac",
@@ -601,7 +600,7 @@ def evaluate_core(item, karat, grams, spot24, cfg, title_text=None, photos=None,
     if not seller_ok(item, cfg):
         return None
     price = float((item.get("price") or {}).get("value", 0) or 0)
-    if price <= 0 or grams <= 0 or price > cfg["max_price"]:
+    if price <= 0 or grams <= 0:
         return None
     ship = _ship_cost(item)
     page_per_g = PURITY[karat] * spot24
@@ -716,7 +715,7 @@ def needs_description(item, cfg):
     if extract_grams(title):
         return False
     price = float((item.get("price") or {}).get("value", 0) or 0)
-    return 0 < price <= cfg["max_price"]
+    return price > 0
 
 
 def evaluate_deep(item, detail, spot24, cfg):
@@ -1024,7 +1023,7 @@ def main():
         "total_profit": round(sum(d["profit"] for d in deals if d["profit"] > 0), 2),
         "settings_used": {
             "payout_pct": CONFIG["payout_pct"], "trap_under_pct": CONFIG["trap_under_pct"],
-            "max_price": CONFIG["max_price"], "min_feedback_pct": CONFIG["min_feedback_pct"],
+            "min_feedback_pct": CONFIG["min_feedback_pct"],
             "alert_min_score": ALERT["min_score"], "queries": CONFIG["queries"],
         },
         "learning": {
