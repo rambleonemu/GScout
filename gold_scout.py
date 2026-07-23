@@ -104,7 +104,7 @@ CONFIG = {
     "explore_karats": ["10k", "14k", "18k"],
     "explore_items": ["wedding band", "hoop earrings", "figaro chain", "box chain",
                       "curb chain", "medal", "religious medal", "id bracelet",
-                      "watch case", "pinky ring", "nugget ring", "grillz"],
+                      "pinky ring", "nugget ring", "grillz"],
 }
 
 EMAIL = {
@@ -147,6 +147,13 @@ HAS_STONE = re.compile(
 NON_GOLD = re.compile(
     r"\b(silver|sterling|925|platinum|palladium|titanium|stainless|steel|"
     r"brass|copper|pewter|tungsten|bronze|nickel)\b", re.I)
+# watches are structurally mixed-material (movement, crystal, case back, sometimes a
+# steel/ceramic bezel) even when cased in solid gold, and a stated "total weight" prices
+# all of that as if it were gold — so these are excluded outright, not floored/flagged
+WATCH_RE = re.compile(
+    r"\b(watch(es)?|wrist\s?watch(es)?|pocket\s?watch(es)?|chronograph(s)?|"
+    r"timepiece(s)?|movement|watch\s?case|watch\s?band|watch\s?strap|"
+    r"watch\s?head)\b", re.I)
 BAR_RE = re.compile(r"\b(bar|bullion|ingot|shot|pellet|grain)\b", re.I)
 # positive-signal language for the "why this scores well" line
 HALLMARK_RE = re.compile(r"\b(stamp(ed)?|hallmark(ed)?|marked|signed|tested|acid[\s-]?test"
@@ -160,6 +167,12 @@ FINENESS_RE = re.compile(r"(?<![\d$.])(417|585|750|916|990|999)(?!\.?\d)")
 GRAM_RE  = re.compile(r"(\d*\.?\d+)\s?(?:g\b|gr\b|gram|grams)", re.I)
 DWT_RE   = re.compile(r"(\d*\.?\d+)\s?(?:dwt|pennyweight|penny\s?weight)\b", re.I)
 FRACTION_RE = re.compile(r"(\d+)\s*/\s*(\d+)\s?(?:g\b|gr\b|gram|grams)", re.I)
+# European-style decimal commas: "13,25g" means 13.25 grams, not two separate numbers.
+# Only treated as a decimal (not a thousands separator) when 1-2 digits follow the comma
+# and a weight unit comes right after -- real thousands separators group in 3s, and gold
+# jewelry never legitimately weighs in the thousands of grams anyway.
+COMMA_DECIMAL_RE = re.compile(
+    r"(\d+),(\d{1,2})(?=\s?(?:g\b|gr\b|grams?\b|dwt\b|pennyweight))", re.I)
 DWT_TO_G = 1.55517
 # Weight explicitly attributed to gold (so we can price off gold, not total weight)
 GOLD_WT_RES = [
@@ -195,10 +208,11 @@ def karats_in_text(text):
 
 def extract_grams(text):
     """Weight in grams from text. Handles fractions (1/2), leading decimals (.5),
-    plain grams, and pennyweight (dwt). Fractions are checked first so '1/2 gram'
-    isn't misread as 2 grams."""
+    plain grams, pennyweight (dwt), and European comma decimals (13,25g). Fractions
+    are checked first so '1/2 gram' isn't misread as 2 grams."""
     if not text:
         return None
+    text = COMMA_DECIMAL_RE.sub(r"\1.\2", text)
     m = FRACTION_RE.search(text)
     if m:
         num, den = float(m.group(1)), float(m.group(2))
@@ -229,6 +243,7 @@ def extract_gold_grams(text):
     if no gold-specific weight is stated."""
     if not text:
         return None
+    text = COMMA_DECIMAL_RE.sub(r"\1.\2", text)
     for rx in GOLD_WT_RES:
         m = rx.search(text)
         if m:
@@ -244,6 +259,8 @@ def is_solid_no_stones(text):
     if NOT_SOLID.search(text):
         return False
     if NON_GOLD.search(text):
+        return False
+    if WATCH_RE.search(text):
         return False
     if EXTRA_EXCLUDE_RE and EXTRA_EXCLUDE_RE.search(text):   # your own words from settings
         return False

@@ -28,6 +28,20 @@ check("grams: sane clamp rejects 5000g", gs.extract_grams("necklace 5000 grams")
 check("grams: dwt converts", abs(gs.extract_grams("10 dwt scrap") - 15.55) < 0.01)
 check("gold-wt: '8.2g of gold' specific", gs.extract_gold_grams("lot with 8.2g of gold") == 8.2)
 
+# ---------- comma-decimal weight bug ----------
+check("grams: '13,25g' reads as 13.25, not 25", gs.extract_grams("14k gold ring 13,25g") == 13.25)
+check("grams: '5,5 dwt' comma decimal converts", abs(gs.extract_grams("10k chain 5,5 dwt") - 8.55) < 0.01)
+check("grams: plain '13.25g' unaffected", gs.extract_grams("14k gold ring 13.25g") == 13.25)
+check("gold-wt: comma decimal in gold-specific weight", gs.extract_gold_grams("8,5g of gold content") == 8.5)
+
+# ---------- watch exclusion ----------
+check("watch: 'mens watch' excluded even if titled solid gold",
+      not gs.is_solid_no_stones("14k solid gold mens watch 45g"))
+check("watch: 'chronograph' excluded", not gs.is_solid_no_stones("18k gold chronograph 60g"))
+check("watch: 'movement' excluded", not gs.is_solid_no_stones("vintage gold watch movement parts"))
+check("watch: plain chain still passes", gs.is_solid_no_stones("14k solid gold rope chain 10g"))
+check("watch: bracelet still passes (not a watch band)", gs.is_solid_no_stones("14k solid gold cuban bracelet 20g"))
+
 # ---------- feedback engine ----------
 cfg = copy.deepcopy(gs.CONFIG)
 now_ms = time.time() * 1000
