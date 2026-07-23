@@ -68,6 +68,10 @@ CONFIG = {
 
     # ---- content filters ----
     "exclude_mixed": True,      # drop multi-karat items entirely (lots, pendant-on-chain combos)
+    "auth_guarantee_only": True,  # only surface items qualified for eBay's Authenticity Guarantee
+                                  # program — filtered at the API call AND re-checked per item, so
+                                  # flipping this off in settings.json / the dashboard is the only
+                                  # thing needed to go back to unrestricted results
 
     # ---- feedback learning (👍/👎 taps from the dashboard -> feedback.json) ----
     "feedback_file": "feedback.json",
@@ -293,7 +297,7 @@ def load_settings(cfg):
               "history_max", "spot_stale_max_hours"):
         if isinstance(s.get(k), (int, float)):
             cfg[k] = s[k]
-    for k in ("exclude_mixed", "explore_enabled"):
+    for k in ("exclude_mixed", "explore_enabled", "auth_guarantee_only"):
         if isinstance(s.get(k), bool):
             cfg[k] = s[k]
     if s.get("sort_mode") in ("alternate", "both", "price", "newlyListed"):
@@ -327,7 +331,8 @@ def load_settings(cfg):
     if words:
         EXTRA_EXCLUDE_RE = re.compile(r"\b(" + "|".join(words) + r")\b", re.I)
     print(f"settings.json: {len(cfg['queries'])} queries · payout {cfg['payout_pct']} · "
-          f"trap {cfg['trap_under_pct']} · {len(words)} extra excludes")
+          f"trap {cfg['trap_under_pct']} · {len(words)} extra excludes · "
+          f"auth-guarantee-only {cfg.get('auth_guarantee_only', True)}")
 
 
 # ======================== feedback learning engine =========================
@@ -549,16 +554,32 @@ def get_token():
 API_ERRORS = {"count": 0, "quota": 0}   # non-200s this run; quota = HTTP 429s specifically
 
 
-def search(token, query, limit, sort="price"):
+def auth_guaranteed(item):
+    """True if eBay itself qualifies this item for the Authenticity Guarantee program.
+    Checked against both response shapes eBay uses: the item_summary/search
+    "qualifiedPrograms" array, and the item-detail "authenticityGuarantee" container
+    (present on getItem responses for deep-scanned items)."""
+    if "AUTHENTICITY_GUARANTEE" in (item.get("qualifiedPrograms") or []):
+        return True
+    return bool(item.get("authenticityGuarantee"))
+
+
+def search(token, query, limit, sort="price", cfg=None):
     out, offset = [], 0
     headers = {"Authorization": f"Bearer {token}", "X-EBAY-C-MARKETPLACE-ID": "EBAY_US"}
+    base_filter = ("buyingOptions:{FIXED_PRICE},conditions:{USED|UNSPECIFIED},"
+                   "itemLocationCountry:US")
+    # single source of truth: this is the only place the AG restriction is added to the
+    # actual eBay query. evaluate_core() re-checks per item as a defensive backstop —
+    # toggle cfg["auth_guarantee_only"] (settings.json / dashboard) to change both at once.
+    if (cfg or {}).get("auth_guarantee_only", True):
+        base_filter += ",qualifiedPrograms:{AUTHENTICITY_GUARANTEE}"
     while offset < limit:
         page = min(50, limit - offset)
         r = requests.get("https://api.ebay.com/buy/browse/v1/item_summary/search",
             headers=headers,
             params={"q": query,
-                    "filter": "buyingOptions:{FIXED_PRICE},conditions:{USED|UNSPECIFIED},"
-                              "itemLocationCountry:US",
+                    "filter": base_filter,
                     "sort": sort, "limit": page, "offset": offset}, timeout=30)
         if r.status_code != 200:
             API_ERRORS["count"] += 1
@@ -598,6 +619,12 @@ def _ship_cost(item):
 def evaluate_core(item, karat, grams, spot24, cfg, title_text=None, photos=None,
                   gold_specific=False, mixed_karats=None):
     if not seller_ok(item, cfg):
+        return None
+    ag = auth_guaranteed(item)
+    # backstop, not the primary filter: search() already asks eBay for AG-only results
+    # when this setting is on, but a listing could theoretically slip through (API quirk,
+    # cached result, etc.), so re-check here before it ever becomes a deal row.
+    if cfg.get("auth_guarantee_only", True) and not ag:
         return None
     price = float((item.get("price") or {}).get("value", 0) or 0)
     if price <= 0 or grams <= 0:
@@ -679,7 +706,7 @@ def evaluate_core(item, karat, grams, spot24, cfg, title_text=None, photos=None,
         "score": deal_score(under_by, cfg["payout_pct"], cfg["trap_under_pct"]),
         "under_pct": round(under_by * 100, 1),
         "trap": is_trap, "trap_reason": reason, "deal_why": deal_why,
-        "verify": verify, "gold_wt": gold_specific,
+        "verify": verify, "gold_wt": gold_specific, "auth_guaranteed": ag,
         "mixed_lot": mixed, "mixed_note": mixed_note,
         "offer": "BEST_OFFER" in (item.get("buyingOptions") or []),
         "seller_pct": s_pct, "seller_score": s_score, "seller_user": seller.get("username", ""), "photos": photos,
@@ -884,7 +911,7 @@ def collect(token, queries, spot24, cfg, sort, deep):
     for q in queries:
         for srt in sorts:
             print(f"Searching ({srt}): {q}")
-            for item in search(token, q, cfg["results_per_query"], sort=srt):
+            for item in search(token, q, cfg["results_per_query"], sort=srt, cfg=cfg):
                 iid = item.get("itemId")
                 if iid in seen:
                     continue

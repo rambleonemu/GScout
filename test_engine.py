@@ -98,13 +98,45 @@ s_even = gs.sorts_for_run(cfg2, 0); s_odd = gs.sorts_for_run(cfg2, 1)
 check("alternate: sorts flip between runs", s_even != s_odd)
 
 # mixed exclusion toggle
-cfg3 = copy.deepcopy(gs.CONFIG); cfg3["exclude_mixed"] = True
+cfg3 = copy.deepcopy(gs.CONFIG); cfg3["exclude_mixed"] = True; cfg3["auth_guarantee_only"] = False
 item = {"price":{"value":"500"},"seller":{"feedbackPercentage":"99.5","feedbackScore":"800"},
         "title":"14k and 10k gold lot 20 grams","itemId":"z1","itemWebUrl":"u","buyingOptions":[]}
 check("mixed: excluded when toggle on", gs.evaluate(item, 132.0, cfg3) is None)
 cfg3["exclude_mixed"] = False
 r = gs.evaluate(item, 132.0, cfg3)
 check("mixed: allowed + floored when toggle off", r is not None and r["karat"] == "10K")
+
+# ---------- authenticity guarantee filter ----------
+ag_item = {"price":{"value":"500"},"seller":{"feedbackPercentage":"99.5","feedbackScore":"800"},
+           "title":"14k solid gold rope chain 10 grams","itemId":"ag1","itemWebUrl":"u",
+           "buyingOptions":[], "qualifiedPrograms":["AUTHENTICITY_GUARANTEE"]}
+plain_item = {"price":{"value":"500"},"seller":{"feedbackPercentage":"99.5","feedbackScore":"800"},
+              "title":"14k solid gold rope chain 10 grams","itemId":"pl1","itemWebUrl":"u",
+              "buyingOptions":[]}
+detail_item = {"price":{"value":"500"},"seller":{"feedbackPercentage":"99.5","feedbackScore":"800"},
+               "title":"14k solid gold rope chain 10 grams","itemId":"dt1","itemWebUrl":"u",
+               "buyingOptions":[], "authenticityGuarantee":{"program":"ELIGIBLE"}}
+check("ag: qualifiedPrograms array detected", gs.auth_guaranteed(ag_item))
+check("ag: authenticityGuarantee container detected", gs.auth_guaranteed(detail_item))
+check("ag: plain item not flagged", not gs.auth_guaranteed(plain_item))
+
+cfgAG = copy.deepcopy(gs.CONFIG); cfgAG["auth_guarantee_only"] = True
+r_ag = gs.evaluate(ag_item, 132.0, cfgAG)
+check("ag-only on: AG item still evaluated", r_ag is not None and r_ag["auth_guaranteed"] is True)
+check("ag-only on: non-AG item dropped", gs.evaluate(plain_item, 132.0, cfgAG) is None)
+cfgAG["auth_guarantee_only"] = False
+r_plain = gs.evaluate(plain_item, 132.0, cfgAG)
+check("ag-only off: non-AG item now allowed", r_plain is not None and r_plain["auth_guaranteed"] is False)
+
+import unittest.mock as mock
+resp = mock.Mock(status_code=200); resp.json.return_value = {"itemSummaries": []}
+with mock.patch.object(gs.requests, "get", return_value=resp) as mget:
+    gs.search("tok", "14k gold ring grams", 50, cfg={"auth_guarantee_only": True})
+    filt_on = mget.call_args.kwargs["params"]["filter"]
+    gs.search("tok", "14k gold ring grams", 50, cfg={"auth_guarantee_only": False})
+    filt_off = mget.call_args.kwargs["params"]["filter"]
+check("ag-only on: eBay filter includes qualifiedPrograms", "qualifiedPrograms:{AUTHENTICITY_GUARANTEE}" in filt_on)
+check("ag-only off: eBay filter omits qualifiedPrograms", "qualifiedPrograms" not in filt_off)
 
 # ---------- history metrics + trim behavior ----------
 cfgH = copy.deepcopy(gs.CONFIG)

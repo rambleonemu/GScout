@@ -125,6 +125,7 @@
   .tag.tr { background:rgba(110,231,183,.18); color:#6ee7b7; }
   .tag.n { background:rgba(52,211,153,.18); color:#34d399; }
   .tag.g { background:rgba(96,165,250,.15); color:#60a5fa; }
+  .tag.ag { background:rgba(59,130,246,.18); color:#93c5fd; }
   .empty { border:1px solid #2a2210; background:rgba(20,17,5,.4); border-radius:10px;
            padding:24px; text-align:center; font-size:14px; color:#737373; }
   .foot { font-size:11px; line-height:1.6; color:#525252; margin-top:18px; }
@@ -628,6 +629,10 @@ function render(){
         <label class="toggle" style="align-self:end"><input type="checkbox" id="s_nomixed" ${SET.exclude_mixed!==false?"checked":""}> exclude mixed-karat / lots</label>
       </div>
       <div class="row" style="margin-bottom:10px">
+        <label class="toggle"><input type="checkbox" id="s_agonly" ${SET.auth_guarantee_only!==false?"checked":""}> only Authenticity Guarantee listings</label>
+        <span class="note">filtered at the eBay search itself — off shows everything again</span>
+      </div>
+      <div class="row" style="margin-bottom:10px">
         <span class="label">Sort sweep</span>
         ${[["alternate","alternate (½ calls)"],["both","both (2× calls)"],["price","cheapest only"],["newlyListed","newest only"]].map(([v,l])=>
           `<button class="chip ${(SET.sort_mode||"alternate")===v?"on":""}" onclick="setSortMode('${v}')">${l}</button>`).join("")}
@@ -713,6 +718,7 @@ function dealRow(x){
   if(saved)cls.push("saved"); if(bought)cls.push("bought");
   const tags=[
     isNew?'<span class="tag n">new</span>':'',
+    x.auth_guaranteed?'<span class="tag ag">🛡 authenticity guarantee</span>':'',
     trusted?`<span class="tag tr">★ trusted seller (${TRUSTED[x.seller_user]})</span>`:'',
     x.trap?'<span class="tag t">trap</span>':'',
     x.verify?'<span class="tag v">verify wt</span>':'',
@@ -762,7 +768,7 @@ function endedRow(x){
       <div class="score" style="box-shadow:inset 0 0 0 1px ${st.c}55">
         <span class="n" style="color:${st.c}">${x.score}</span><span class="l">${st.l}</span></div>
       <div style="min-width:0;flex:1">
-        <div class="title">${x.title} <span class="tag">ended ${endedAge(x._endedTs)}</span>${SAVED.has(x.id)?' <span class="tag tr">★ was saved</span>':''}</div>
+        <div class="title">${x.title} <span class="tag">ended ${endedAge(x._endedTs)}</span>${x.auth_guaranteed?' <span class="tag ag">🛡 authenticity guarantee</span>':''}${SAVED.has(x.id)?' <span class="tag tr">★ was saved</span>':''}</div>
         <div class="meta">
           <span class="wht">${x.karat} · ${x.grams}g</span>
           <span>${fmt(x.price)}${x.ship?` +${fmt(x.ship)} ship`:""}</span>
@@ -925,6 +931,7 @@ function gatherSettings(){
     daily_call_budget:v("s_budget",4500),
     sort_mode:(SET&&SET._sort_mode_ui)||SET.sort_mode||"alternate",
     exclude_mixed:!!document.getElementById("s_nomixed")?.checked,
+    auth_guarantee_only:!!document.getElementById("s_agonly")?.checked,
     explore_enabled:!!document.getElementById("s_explore")?.checked,
     explore_frac:v("s_exfrac",12)/100,
     explore_pool:pool,

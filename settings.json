@@ -86,6 +86,7 @@
     "18k gold scrap grams",
     "14k gold chain grams"
   ],
+  "auth_guarantee_only": true,
   "daily_call_budget": 4500,
   "runs_per_day": 0,
   "sort_mode": "both",
