@@ -196,7 +196,7 @@ const F = Object.assign({karat:"All",minScore:0,minProfit:0,showTraps:false,
   hideSeen:false,showHidden:false,settingsOpen:false,
   sortBy:"score",   // "score" | "profit" | "age" | "pricedrop"
   showTrends:true, showPrices:true, showEnded:false, showQueries:false, fbOpen:null,
-  chartRange:"all", priceUnit:"oz", dealsMode:"total", trendMetric:"under"}, ui.F||{});
+  chartRange:"all", priceUnit:"oz", dealsMode:"total", trendMetric:"under", queryMetric:"deals"}, ui.F||{});
 const saveUI = ()=>{ ui.F=F; LS.set("gdd_ui",ui); };
 
 const SAMPLE = {
@@ -341,6 +341,27 @@ function barChart(counts){
       <text x="${x+bw/2}" y="${H-4}" fill="#525252" font-size="8" text-anchor="middle" font-family="monospace">${k}</text>
       ${v?`<text x="${x+bw/2}" y="${Math.max(y,PT)-3}" fill="#a3a3a3" font-size="8" text-anchor="middle" font-family="monospace">${v}</text>`:''}`;
   }).join('')+`</svg>`;
+}
+function esc(s){ return (s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+function queryPerfChart(qstats, metric){
+  if(!qstats||!qstats.queries) return "";
+  const entries=Object.entries(qstats.queries).filter(([,s])=>(s.runs||0)>0);
+  if(!entries.length) return '<div class="note">No query history yet — check back after a few runs.</div>';
+  const val=([,s])=>metric==="rate"?((s.deals||0)/(s.runs||1)):(s.deals||0);
+  const top=entries.sort((a,b)=>val(b)-val(a)).slice(0,12);
+  const max=Math.max(0.001,...top.map(val));
+  const rowH=20,labelW=190,barMaxW=300,W=labelW+barMaxW+50,H=top.length*rowH+6;
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;font-family:monospace">`+
+    top.map(([q,s],i)=>{
+      const v=val([q,s]), y=i*rowH+2, w=Math.max(2,(v/max)*barMaxW);
+      const label=q.length>26?q.slice(0,24)+"…":q;
+      const color=s.status==="retired"?"#525252":(s.origin==="explore"?"#c4b5fd":"#fbbf24");
+      const shown=metric==="rate"?v.toFixed(2)+"/run":String(s.deals||0);
+      return `<title>${esc(q)}</title>`+
+        `<text x="0" y="${y+11}" fill="#a3a3a3" font-size="9">${esc(label)}</text>
+        <rect x="${labelW}" y="${y}" width="${w}" height="14" rx="2" fill="${color}" opacity="0.85"/>
+        <text x="${labelW+w+5}" y="${y+11}" fill="#e5e5e5" font-size="9">${shown}</text>`;
+    }).join("")+`</svg>`;
 }
 function listingAge(listed){
   if(!listed) return null;
@@ -692,8 +713,14 @@ function render(){
     <section>
       <div class="sec-hdr" onclick="setF('showQueries',!F.showQueries)">
         <div class="label">Search performance · ${Object.keys(QSTATS.queries).length} tracked · run ${QSTATS.meta.run_counter}</div>
-        <span class="sec-toggle">${F.showQueries?"▲ collapse":"▼ expand"}</span>
+        <span class="sec-toggle">${F.showQueries?"▲ collapse table":"▼ expand table"}</span>
       </div>
+      <div class="chiprow" style="margin:6px 0 8px" onclick="event.stopPropagation()">
+        ${[["deals","most deals"],["rate","best hit rate"]].map(([v,l])=>
+          `<button class="chip xs ${F.queryMetric===v?"on":""}" onclick="setF('queryMetric','${v}')">${l}</button>`).join("")}
+      </div>
+      <div class="qwrap">${queryPerfChart(QSTATS, F.queryMetric)}</div>
+      <div class="note" style="margin:6px 0 8px;color:#525252">Amber = core query · purple = exploring · gray = retired. Bars show ${F.queryMetric==="rate"?"deals per run (hit rate)":"total deals returned"} across the tracked history below.</div>
       ${F.showQueries?`
         ${DATA.learning?`<div class="note" style="margin:4px 0 8px;color:#737373">Last run: ${DATA.learning.queries_ran} searches (${(DATA.learning.sorts||[]).join("+")})${(DATA.learning.explored||[]).length?` · explored: ${DATA.learning.explored.map(q=>`"${q}"`).join(", ")}`:""}${(DATA.learning.promoted||[]).length?` · <span style="color:#34d399">promoted: ${DATA.learning.promoted.join(", ")}</span>`:""}${DATA.learning.feedback_events?` · learning from ${DATA.learning.feedback_events} taps`:""}</div>`:""}
         <div class="qwrap"><table class="qtable"><tr><th>search</th><th>runs</th><th>deals</th><th>traps</th><th>hit rate</th></tr>
