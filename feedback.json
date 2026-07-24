@@ -43,5 +43,23 @@
   "verdict": "bad",
   "category": "stones",
   "ts": 1784914792047
+ },
+ {
+  "id": "v1|198521166018|0",
+  "query": "14k gold bracelet grams",
+  "seller": "sammk4",
+  "karat": "14K",
+  "verdict": "bad",
+  "category": "weight_karat",
+  "ts": 1784914832118
+ },
+ {
+  "id": "v1|267724907231|0",
+  "query": "14k gold earrings grams",
+  "seller": "2645richard",
+  "karat": "14K",
+  "verdict": "bad",
+  "category": "weight_karat",
+  "ts": 1784914845357
  }
 ]
