@@ -61,5 +61,14 @@
   "verdict": "bad",
   "category": "weight_karat",
   "ts": 1784914845357
+ },
+ {
+  "id": "v1|298092740617|0",
+  "query": "10k gold pendant grams",
+  "seller": "baysidethrift",
+  "karat": "10K",
+  "verdict": "bad",
+  "category": "plated",
+  "ts": 1784915099139
  }
 ]
