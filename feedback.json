@@ -7,5 +7,41 @@
   "verdict": "bad",
   "category": "plated",
   "ts": 1784914733676
+ },
+ {
+  "id": "v1|205829076431|0",
+  "query": "14k gold watch case grams",
+  "seller": "firechic89",
+  "karat": "14K",
+  "verdict": "bad",
+  "category": "stones",
+  "ts": 1784914760827
+ },
+ {
+  "id": "v1|168547570276|0",
+  "query": "22k gold scrap grams",
+  "seller": "8ten1944",
+  "karat": "22K",
+  "verdict": "bad",
+  "category": "lot",
+  "ts": 1784914771726
+ },
+ {
+  "id": "v1|298183577890|0",
+  "query": "18k gold chain grams",
+  "seller": "baysidethrift",
+  "karat": "18K",
+  "verdict": "bad",
+  "category": "plated",
+  "ts": 1784914783271
+ },
+ {
+  "id": "v1|800301098690|0",
+  "query": "14k gold coin pendant grams",
+  "seller": "number1homeshoppingt.v.qualitydeals",
+  "karat": "14K",
+  "verdict": "bad",
+  "category": "stones",
+  "ts": 1784914792047
  }
 ]
