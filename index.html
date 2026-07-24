@@ -651,7 +651,8 @@ function render(){
       </div>
       <div class="row" style="margin-bottom:10px">
         <label class="toggle"><input type="checkbox" id="s_agonly" ${SET.auth_guarantee_only!==false?"checked":""}> only Authenticity Guarantee listings</label>
-        <span class="note">filtered at the eBay search itself — off shows everything again</span>
+        <label>ship-to ZIP <input id="s_zip" type="text" size="6" value="${SET.delivery_postal_code||"33101"}"></label>
+        <span class="note">eBay returns <b>nothing</b> for the Authenticity Guarantee filter unless a ship-to ZIP is set — leave this filled whenever the toggle is on.</span>
       </div>
       <div class="row" style="margin-bottom:10px">
         <span class="label">Sort sweep</span>
@@ -959,6 +960,7 @@ function gatherSettings(){
     sort_mode:(SET&&SET._sort_mode_ui)||SET.sort_mode||"alternate",
     exclude_mixed:!!document.getElementById("s_nomixed")?.checked,
     auth_guarantee_only:!!document.getElementById("s_agonly")?.checked,
+    delivery_postal_code:(document.getElementById("s_zip")?.value||"").trim(),
     explore_enabled:!!document.getElementById("s_explore")?.checked,
     explore_frac:v("s_exfrac",12)/100,
     explore_pool:pool,

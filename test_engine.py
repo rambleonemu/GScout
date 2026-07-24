@@ -144,13 +144,25 @@ check("ag-only off: non-AG item now allowed", r_plain is not None and r_plain["a
 
 import unittest.mock as mock
 resp = mock.Mock(status_code=200); resp.json.return_value = {"itemSummaries": []}
-with mock.patch.object(gs.requests, "get", return_value=resp) as mget:
-    gs.search("tok", "14k gold ring grams", 50, cfg={"auth_guarantee_only": True})
-    filt_on = mget.call_args.kwargs["params"]["filter"]
-    gs.search("tok", "14k gold ring grams", 50, cfg={"auth_guarantee_only": False})
-    filt_off = mget.call_args.kwargs["params"]["filter"]
+def _filter_for(cfg):
+    with mock.patch.object(gs.requests, "get", return_value=resp) as mget:
+        gs.search("tok", "14k gold ring grams", 50, cfg=cfg)
+        return mget.call_args.kwargs["params"]["filter"]
+filt_on  = _filter_for({"auth_guarantee_only": True, "delivery_postal_code": "33101"})
+filt_off = _filter_for({"auth_guarantee_only": False})
+filt_nozip = _filter_for({"auth_guarantee_only": True, "delivery_postal_code": ""})
 check("ag-only on: eBay filter includes qualifiedPrograms", "qualifiedPrograms:{AUTHENTICITY_GUARANTEE}" in filt_on)
 check("ag-only off: eBay filter omits qualifiedPrograms", "qualifiedPrograms" not in filt_off)
+# REGRESSION: eBay silently returns zero items for qualifiedPrograms unless BOTH
+# deliveryCountry and deliveryPostalCode accompany it. Shipping one without the
+# others took the scanner down for ~19h with HTTP 200s and no error signal.
+check("ag-only on: deliveryCountry accompanies qualifiedPrograms", "deliveryCountry:US" in filt_on)
+check("ag-only on: deliveryPostalCode accompanies qualifiedPrograms", "deliveryPostalCode:33101" in filt_on)
+check("ag-only never sent without both companions",
+      ("qualifiedPrograms" not in filt_on) or
+      ("deliveryCountry:US" in filt_on and "deliveryPostalCode:" in filt_on))
+check("ag-only with blank zip: degrades to unfiltered, not silent-zero",
+      "qualifiedPrograms" not in filt_nozip)
 
 # ---------- history metrics + trim behavior ----------
 cfgH = copy.deepcopy(gs.CONFIG)

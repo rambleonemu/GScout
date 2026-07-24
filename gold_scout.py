@@ -72,6 +72,10 @@ CONFIG = {
                                   # program — filtered at the API call AND re-checked per item, so
                                   # flipping this off in settings.json / the dashboard is the only
                                   # thing needed to go back to unrestricted results
+    "delivery_postal_code": "33101",  # REQUIRED whenever auth_guarantee_only is on: eBay only
+                                  # honours the qualifiedPrograms filter alongside deliveryCountry
+                                  # + deliveryPostalCode. Also scopes results to items that will
+                                  # actually ship to you. Change to your own ZIP.
 
     # ---- feedback learning (👍/👎 taps from the dashboard -> feedback.json) ----
     "feedback_file": "feedback.json",
@@ -317,6 +321,8 @@ def load_settings(cfg):
     for k in ("exclude_mixed", "explore_enabled", "auth_guarantee_only"):
         if isinstance(s.get(k), bool):
             cfg[k] = s[k]
+    if s.get("delivery_postal_code") is not None:
+        cfg["delivery_postal_code"] = str(s["delivery_postal_code"]).strip()
     if s.get("sort_mode") in ("alternate", "both", "price", "newlyListed"):
         cfg["sort_mode"] = s["sort_mode"]
     if isinstance(s.get("explore_pool"), list):
@@ -589,8 +595,20 @@ def search(token, query, limit, sort="price", cfg=None):
     # single source of truth: this is the only place the AG restriction is added to the
     # actual eBay query. evaluate_core() re-checks per item as a defensive backstop —
     # toggle cfg["auth_guarantee_only"] (settings.json / dashboard) to change both at once.
+    #
+    # CRITICAL eBay quirk: qualifiedPrograms only returns items when deliveryCountry AND
+    # deliveryPostalCode are also present. Without them eBay answers HTTP 200 with an
+    # empty itemSummaries — a silent zero, not an error. Never send one without the
+    # other two. (Documented under qualifiedPrograms in Buy API Field Filters.)
     if (cfg or {}).get("auth_guarantee_only", True):
-        base_filter += ",qualifiedPrograms:{AUTHENTICITY_GUARANTEE}"
+        zipc = str((cfg or {}).get("delivery_postal_code") or "").strip()
+        if not zipc:
+            print("  ! auth_guarantee_only is on but delivery_postal_code is empty — "
+                  "eBay returns nothing for qualifiedPrograms without it. Skipping AG "
+                  "filter this run; set delivery_postal_code in settings.json.")
+        else:
+            base_filter += (",qualifiedPrograms:{AUTHENTICITY_GUARANTEE}"
+                            f",deliveryCountry:US,deliveryPostalCode:{zipc}")
     while offset < limit:
         page = min(50, limit - offset)
         r = requests.get("https://api.ebay.com/buy/browse/v1/item_summary/search",
@@ -1032,9 +1050,23 @@ def main():
                else "no API errors — possibly genuinely empty")
         print(f"[failsafe] sweep returned 0/0 ({why}) — carrying {len(deals)} deal(s) / "
               f"{len(traps)} trap(s) forward from {carried_from}")
-        if not prev.get("carried_from"):     # first failed run of this outage only
-            notify("GScout sweep failed", f"0 results ({why}). Showing last good data "
-                   f"from {carried_from}. Retrying on schedule.", priority="high")
+        # Re-alert on a cadence rather than once at the outage's start. The old
+        # first-run-only rule meant a filter mistake could sit dead for a day with
+        # a single stale notification and a healthy-looking dead-man's switch.
+        stale_h = None
+        try:
+            stale_h = (datetime.now(timezone.utc)
+                       - datetime.fromisoformat(carried_from)).total_seconds() / 3600
+        except Exception:
+            pass
+        streak = int(prev.get("zero_streak") or 0) + 1
+        if streak == 1 or streak % cfg.get("zero_alert_every", 6) == 0:
+            notify("GScout sweep failed",
+                   f"{streak} consecutive sweeps returned 0 results ({why})."
+                   + (f" Last good data is {stale_h:.0f}h old." if stale_h else "")
+                   + " Check filters/quota — the engine keeps retrying.",
+                   priority="high")
+    zero_streak = (int(prev.get("zero_streak") or 0) + 1) if carried_from else 0
 
     # attach prev_price so the dashboard can show "was $X → now $Y"
     if not carried_from:
@@ -1064,6 +1096,7 @@ def main():
         "deals": deals,
         "traps": traps[:80],
         "traps_count": len(traps),
+        "zero_streak": zero_streak,
         "total_profit": round(sum(d["profit"] for d in deals if d["profit"] > 0), 2),
         "settings_used": {
             "payout_pct": CONFIG["payout_pct"], "trap_under_pct": CONFIG["trap_under_pct"],
