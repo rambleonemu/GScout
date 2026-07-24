@@ -97,7 +97,7 @@
   .deal.trap { border-color:#5b2a2a; border-left-color:#5b2a2a; }
   .deal.seen { opacity:.5; }
   .deal.saved { border-color:#3f5a2a; border-left-color:#4a7a2a; }
-  .deal.bought { border-color:#7c6f3a; border-left-color:#c8960c; background:rgba(124,111,58,.08); }
+  .deal.rated-bad { border-left-color:#7f3040; opacity:.72; }
   .deal:hover { border-color:#404040; border-left-color:#f5c51866; background:#111008; }
   .deal .link { display:flex; gap:14px; align-items:center; flex:1; min-width:0; text-decoration:none; color:inherit; }
   .score { width:54px; height:54px; flex-shrink:0; border-radius:10px; background:#0d0b02;
@@ -156,9 +156,73 @@
   .qtable { width:100%; border-collapse:collapse; font-size:11px; }
   .qtable td, .qtable th { padding:3px 8px; text-align:left; border-bottom:1px solid #1a1a1a; color:#a3a3a3; }
   .qtable th { color:#525252; text-transform:uppercase; letter-spacing:1px; font-size:9px; }
+  .qchart { display:flex; flex-direction:column; gap:3px; margin:2px 0 4px; }
+  .qrow { display:grid; grid-template-columns:minmax(120px,1.5fr) 2fr auto auto; gap:8px;
+          align-items:center; padding:2px 0; }
+  .qrow.dim { opacity:.42; }
+  .qlabel { font-family:ui-monospace,monospace; font-size:10.5px; color:#a3a3a3;
+            white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .qflag { color:#f5c518; margin-right:4px; }
+  .qflag.off { color:#fb7185; }
+  .qval { font-family:ui-monospace,monospace; font-size:10px; color:#e5e5e5;
+          min-width:38px; text-align:right; }
+  .qacts { display:flex; gap:3px; }
+  .iact.xs { width:24px; height:22px; font-size:11px; border-radius:5px; }
+  .modal-bg { position:fixed; inset:0; background:rgba(0,0,0,.72); backdrop-filter:blur(2px);
+              display:flex; align-items:center; justify-content:center; z-index:200; padding:16px; }
+  .modal { background:#0f0f0f; border:1px solid #2a2210; border-radius:14px; max-width:420px; width:100%;
+           padding:18px; box-shadow:0 20px 60px rgba(0,0,0,.6); }
+  .modal h4 { font-family:"Cormorant Garamond",Georgia,serif; font-size:13px; font-weight:400;
+              text-transform:uppercase; letter-spacing:3px; color:#f5c518; margin-bottom:4px; }
+  .modal .mtitle { font-size:11px; color:#737373; margin-bottom:14px; line-height:1.45;
+                   overflow:hidden; text-overflow:ellipsis; display:-webkit-box;
+                   -webkit-line-clamp:2; -webkit-box-orient:vertical; }
+  .mopt { display:block; width:100%; text-align:left; background:#161616; border:1px solid #262626;
+          color:#d4d4d4; border-radius:9px; padding:10px 12px; margin-bottom:6px; cursor:pointer;
+          font-size:12.5px; font-family:inherit; transition:.12s; }
+  .mopt:hover { border-color:#f5c51877; background:#1c1a12; color:#f5c518; }
+  .mopt .msub { display:block; font-size:10px; color:#525252; margin-top:2px; letter-spacing:.2px; }
+  .mopt:hover .msub { color:#8a7a3a; }
   .qbadge { font-size:9px; padding:1px 5px; border-radius:3px; background:#1a1a1a; margin-left:5px; }
   .qbadge.ex { color:#a78bfa; } .qbadge.pr { color:#34d399; } .qbadge.rt { color:#525252; }
   @media (max-width:640px){ .charts{grid-template-columns:1fr} .stats{grid-template-columns:repeat(2,1fr)} }
+
+  /* --- command bar: the controls you actually touch, pinned within reach --- */
+  .cmd { position:sticky; top:0; z-index:60; background:rgba(10,10,10,.94);
+         backdrop-filter:blur(8px); border:1px solid #241f10; border-radius:12px;
+         padding:10px 12px; margin-bottom:14px; box-shadow:0 6px 24px rgba(0,0,0,.5); }
+  .cmd-top { display:flex; justify-content:space-between; align-items:baseline;
+             gap:10px; margin-bottom:8px; }
+  .cmd-count { font-family:"Playfair Display",Georgia,serif; font-size:19px; color:#f5c518; }
+  .cmd-count b { font-size:24px; }
+  .cmd-sub { font-family:ui-monospace,monospace; font-size:10.5px; color:#737373;
+             letter-spacing:.3px; margin-left:9px; }
+  .cmd-grid { display:flex; flex-wrap:wrap; gap:6px 16px; align-items:center; }
+  .cmd-grid + .cmd-grid { margin-top:7px; padding-top:7px; border-top:1px solid #1a1710; }
+  .fgroup { display:flex; align-items:center; gap:4px; flex-wrap:wrap; }
+  .flabel { font-family:"Cormorant Garamond",Georgia,serif; font-size:10px;
+            text-transform:uppercase; letter-spacing:2px; color:#6b6b6b; margin-right:2px; }
+  .fval { font-family:ui-monospace,monospace; font-size:11px; color:#f5c518; min-width:20px; }
+  .fnum { width:62px; background:#141414; border:1px solid #2a2210; color:#e5e5e5;
+          border-radius:6px; padding:3px 6px; font-family:ui-monospace,monospace; font-size:11px; }
+  .chip.xs { font-size:9.5px; padding:2px 6px; }
+  .toggle.sm { font-size:11px; }
+  .cmd input[type=range] { width:88px; accent-color:#f5c518; }
+  @media (max-width:620px){ .cmd { position:static; } .cmd-grid { gap:5px 10px; } }
+
+  /* --- stacked search bars: composition of each search's hits, not just volume --- */
+  .qbar { display:flex; background:#141414; border-radius:3px; height:13px; overflow:hidden; }
+  .qbar i { display:block; height:100%; transition:width .25s; }
+  .qbar i.s { background:#f5c518; }         /* strong deals */
+  .qbar i.w { background:#8a6d1f; }         /* low-score deals */
+  .qbar i.t { background:#7f3040; }         /* traps */
+  .qag { color:#93c5fd; margin-left:5px; font-size:9px; }
+  .qmx { color:#c4b5fd; margin-left:4px; font-size:9px; }
+  .qkey { display:flex; flex-wrap:wrap; gap:4px 12px; margin-top:7px;
+          font-family:ui-monospace,monospace; font-size:9.5px; color:#6b6b6b; }
+  .qkey span { display:flex; align-items:center; gap:4px; }
+  .qkey i { width:11px; height:8px; border-radius:2px; display:inline-block; }
+  .qkey i.s{background:#f5c518}.qkey i.w{background:#8a6d1f}.qkey i.t{background:#7f3040}
 </style>
 </head>
 <body>
@@ -178,26 +242,27 @@ let SEEN  = new Set(LS.get("gdd_seen",  []));
 let HIDDEN= new Set(LS.get("gdd_hidden",[]));
 let SAVED = new Set(LS.get("gdd_saved", []));
 let KNOWN = new Set(LS.get("gdd_known", []));   // ids seen on a previous load → for NEW badge
-let BOUGHT= LS.get("gdd_bought", {});           // id -> {seller, karat, price, ts, title}
+
 let LASTSEEN = LS.get("gdd_lastseen", {});      // id -> {snap, absent} : last time each deal was live in the feed
 let ENDED    = LS.get("gdd_ended", {});         // id -> {snap, endedTs} : dropped out of feed (sold/ended), kept 7d
 let NEW   = new Set();
-// sellers you've successfully bought from → trusted (strongest single signal)
+// sellers whose listings you've repeatedly marked good → trusted
 function trustedSellers(){
-  const c={}; Object.values(BOUGHT).forEach(b=>{ if(b.seller) c[b.seller]=(c[b.seller]||0)+1; });
+  const c={}; Object.values(FB).forEach(f=>{ if(f.verdict==="good"&&f.seller) c[f.seller]=(c[f.seller]||0)+1; });
   return c;
 }
 const persist = ()=>{ LS.set("gdd_seen",[...SEEN]); LS.set("gdd_hidden",[...HIDDEN]);
-  LS.set("gdd_saved",[...SAVED]); LS.set("gdd_known",[...KNOWN]); LS.set("gdd_bought",BOUGHT);
+  LS.set("gdd_saved",[...SAVED]); LS.set("gdd_known",[...KNOWN]);
   LS.set("gdd_lastseen",LASTSEEN); LS.set("gdd_ended",ENDED); };
 
 const ui = LS.get("gdd_ui",{})||{};
 const F = Object.assign({karat:"All",minScore:0,minProfit:0,showTraps:false,
   hideSeen:false,showHidden:false,settingsOpen:false,
   sortBy:"score",   // "score" | "profit" | "age" | "pricedrop"
-  showTrends:true, showPrices:true, showEnded:false, showQueries:false, fbOpen:null,
+  showTrends:false, showPrices:false, showEnded:false, showQueries:false, fbOpen:null,
+  trapMode:"hide", agMode:"all", mixedMode:"all",
   chartRange:"all", priceUnit:"oz", dealsMode:"total", trendMetric:"under", queryMetric:"deals"}, ui.F||{});
-const saveUI = ()=>{ ui.F=F; LS.set("gdd_ui",ui); };
+const saveUI = ()=>{ ui.F=Object.assign({},F,{fbOpen:null}); LS.set("gdd_ui",ui); };
 
 const SAMPLE = {
   updated:new Date().toISOString(), spot_per_oz:4118.9, _sample:true,
@@ -219,12 +284,21 @@ const SAMPLE_HIST = Array.from({length:24},(_,i)=>({
 }));
 
 let DATA=null, HIST=[], SET=null, TRUSTED={}, QSTATS=null;
+let PINNED=[], DISABLED=[], QDIRTY=false;   // manual per-search overrides -> settings.json
 // ---- feedback (👍/👎) : shown locally at once, committed to feedback.json so the engine learns ----
 let FB = LS.get("gdd_fb", {});               // id -> {verdict, category, ts, query, seller}
 let FB_PENDING = LS.get("gdd_fb_pending", []); // events not yet committed to the repo
-const FB_CATS = [["plated","plated / not solid"],["weight_karat","wrong weight/karat"],
-  ["stones","stones / mixed materials"],["seller","sketchy seller"],
-  ["overpriced","not profitable"],["style","not my style"],["other","other"]];
+// [key, label, what this reason actually penalises — shown in the popup so the
+// effect of each tap is never a mystery]
+const FB_CATS = [
+  ["plated",       "Not solid gold — plated or filled",  "penalises this search term and the seller"],
+  ["weight_karat", "Weight or karat was wrong",          "penalises this search term"],
+  ["stones",       "Stones or mixed materials",          "penalises this search term"],
+  ["lot",          "Junk lot / not what I searched for", "penalises this search term"],
+  ["seller",       "Sketchy seller",                     "penalises the seller only"],
+  ["overpriced",   "Real, but not profitable",           "recorded only — pricing, not a bad search"],
+  ["style",        "Not my style",                       "recorded only — taste is never punished"],
+  ["other",        "Something else",                     "recorded only"]];
 const persistFB = ()=>{ LS.set("gdd_fb",FB); LS.set("gdd_fb_pending",FB_PENDING); };
 
 // ---- chart helpers: time ranges, karat price derivation, metric fallbacks ----
@@ -343,25 +417,85 @@ function barChart(counts){
   }).join('')+`</svg>`;
 }
 function esc(s){ return (s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
-function queryPerfChart(qstats, metric){
-  if(!qstats||!qstats.queries) return "";
-  const entries=Object.entries(qstats.queries).filter(([,s])=>(s.runs||0)>0);
-  if(!entries.length) return '<div class="note">No query history yet — check back after a few runs.</div>';
-  const val=([,s])=>metric==="rate"?((s.deals||0)/(s.runs||1)):(s.deals||0);
-  const top=entries.sort((a,b)=>val(b)-val(a)).slice(0,12);
+// Per-query deal counts. Prefers cumulative query_stats.json, but falls back to
+// counting the live deals in results.json by their `query` field so the chart still
+// works when the Actions cache has been evicted and query_stats resets to empty.
+function queryDealData(){
+  const qs=(QSTATS&&QSTATS.queries)||(DATA&&DATA.query_perf)||{};
+  const cumulative=Object.entries(qs).filter(([,s])=>(s.runs||0)>0);
+  if(cumulative.length) return {rows:cumulative, live:false};
+  const live={};
+  (DATA&&DATA.deals||[]).forEach(d=>{ const q=d.query||""; if(!q) return;
+    live[q]=live[q]||{runs:1,deals:0,traps:0,origin:"core"}; live[q].deals++; });
+  (DATA&&DATA.traps||[]).forEach(d=>{ const q=d.query||""; if(!q) return;
+    live[q]=live[q]||{runs:1,deals:0,traps:0,origin:"core"}; live[q].traps++; });
+  return {rows:Object.entries(live), live:true};
+}
+function queryPerfChart(rows, metric){
+  if(!rows||!rows.length) return '<div class="note" style="color:#737373">No per-search data yet. It appears once a sweep returns deals — if this stays empty after a successful run, query_stats.json isn\'t surviving between runs.</div>';
+  const total=([,s])=>(s.strong||0)+(s.weak||0)+(s.traps||0) || (s.deals||0)+(s.traps||0);
+  const val=([q,s])=>metric==="rate"?(((s.deals||0)/(s.runs||1))):total([q,s]);
+  const scored=rows.filter(([,s])=>(s.runs||0)>0);
+  const flagged=scored.filter(([q])=>isPinned(q)||isDisabled(q));
+  const normal=scored.filter(([q])=>!isPinned(q)&&!isDisabled(q))
+                     .sort((a,b)=>val(b)-val(a)).filter(e=>val(e)>0);
+  const top=[...flagged.sort((a,b)=>val(b)-val(a)), ...normal].slice(0,18);
+  if(!top.length) return '<div class="note" style="color:#737373">Tracked searches exist, but none have returned anything yet.</div>';
   const max=Math.max(0.001,...top.map(val));
-  const rowH=20,labelW=190,barMaxW=300,W=labelW+barMaxW+50,H=top.length*rowH+6;
-  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;font-family:monospace">`+
-    top.map(([q,s],i)=>{
-      const v=val([q,s]), y=i*rowH+2, w=Math.max(2,(v/max)*barMaxW);
-      const label=q.length>26?q.slice(0,24)+"…":q;
-      const color=s.status==="retired"?"#525252":(s.origin==="explore"?"#c4b5fd":"#fbbf24");
-      const shown=metric==="rate"?v.toFixed(2)+"/run":String(s.deals||0);
-      return `<title>${esc(q)}</title>`+
-        `<text x="0" y="${y+11}" fill="#a3a3a3" font-size="9">${esc(label)}</text>
-        <rect x="${labelW}" y="${y}" width="${w}" height="14" rx="2" fill="${color}" opacity="0.85"/>
-        <text x="${labelW+w+5}" y="${y+11}" fill="#e5e5e5" font-size="9">${shown}</text>`;
-    }).join("")+`</svg>`;
+  return `<div class="qchart">`+top.map(([q,s])=>{
+    const pinned=isPinned(q), disabled=isDisabled(q);
+    // legacy rows predate the breakdown: fall back to one undifferentiated deal block
+    const strong=s.strong||0, weak=s.weak||0, traps=s.traps||0;
+    const plain=(!strong&&!weak)?(s.deals||0):0;
+    const t=strong+weak+traps+plain, v=val([q,s]);
+    const w=(n)=> t? (n/t)*Math.max(1.5,(v/max)*100) : 0;
+    const seg=(n,c,lbl)=> n? `<i class="${c}" style="width:${w(n)}%" title="${n} ${lbl}"></i>`:"";
+    const ag=s.ag||0, mixed=s.mixed||0;
+    const shown=metric==="rate"?((s.deals||0)/(s.runs||1)).toFixed(2):String(t);
+    const note=disabled?"disabled — not searched":pinned?"pinned — always searched":
+               s.status==="retired"?"auto-retired (no hits)":s.origin==="explore"?"exploring":"";
+    return `<div class="qrow ${disabled?"dim":""}">
+      <div class="qlabel" title="${esc(q)}${note?" · "+note:""}">${pinned?'<span class="qflag">★</span>':""}${disabled?'<span class="qflag off">✕</span>':""}${esc(q)}</div>
+      <div class="qbar">${seg(strong,"s","strong deals")}${seg(weak,"w","low-score deals")}${seg(plain,"w","deals")}${seg(traps,"t","traps")}</div>
+      <div class="qval">${shown}${ag?`<span class="qag" title="${ag} Authenticity Guarantee">🛡${ag}</span>`:""}${mixed?`<span class="qmx" title="${mixed} mixed-karat lots">◆${mixed}</span>`:""}</div>
+      <div class="qacts">
+        <button class="iact xs ${pinned?"on":""}" title="${pinned?"unpin":"always run this search"}" onclick="toggleQuery('pin','${esc(q).replace(/'/g,"\\'")}')">★</button>
+        <button class="iact xs ${disabled?"bad":""}" title="${disabled?"re-enable":"stop using this search"}" onclick="toggleQuery('off','${esc(q).replace(/'/g,"\\'")}')">✕</button>
+      </div></div>`;
+  }).join("")+`</div>
+  <div class="qkey"><span><i class="s"></i>strong (${SET&&SET.strong_score||70}+)</span><span><i class="w"></i>low score</span><span><i class="t"></i>traps</span><span>🛡 guaranteed</span><span>◆ mixed lot</span></div>`;
+}
+// Three-way visibility, identical model for every listing trait: show everything,
+// show only the ones with it, or hide them. Traps, Authenticity Guarantee and
+// mixed-karat lots all behave the same way so there's one thing to learn.
+const TRI = [["all","all"],["only","only"],["hide","hide"]];
+function triState(key,label){
+  return `<div class="fgroup"><span class="flabel">${label}</span>${
+    TRI.map(([v,l])=>`<button class="chip ${F[key]===v?"on":""}" onclick="setF('${key}','${v}')">${l}</button>`).join("")}</div>`;
+}
+function passTraits(x){
+  const m=(mode,has)=> mode==="all" || (mode==="only"&&has) || (mode==="hide"&&!has);
+  return m(F.trapMode,!!x.trap) && m(F.agMode,!!x.auth_guaranteed) && m(F.mixedMode,!!x.mixed_lot);
+}
+function isPinned(q){ return (PINNED||[]).includes(q); }
+function isDisabled(q){ return (DISABLED||[]).includes(q); }
+function toggleQuery(kind,q){
+  q=q.replace(/&amp;/g,"&").replace(/&lt;/g,"<").replace(/&gt;/g,">");
+  const list = kind==="pin"?PINNED:DISABLED, other = kind==="pin"?DISABLED:PINNED;
+  const i=list.indexOf(q);
+  if(i>=0) list.splice(i,1);
+  else { list.push(q); const j=other.indexOf(q); if(j>=0) other.splice(j,1); }  // pin and disable are mutually exclusive
+  SET=SET||{}; SET.pinned_queries=PINNED; SET.disabled_queries=DISABLED;
+  QDIRTY=true; render();
+  saveQueryOverrides();
+}
+let _qTimer=null;
+function saveQueryOverrides(){
+  clearTimeout(_qTimer);
+  _qTimer=setTimeout(async()=>{
+    const ok=await saveSettings(true);
+    if(ok){ QDIRTY=false; render(); }
+  }, 1500);   // debounce: batch several taps into one commit
 }
 function listingAge(listed){
   if(!listed) return null;
@@ -439,8 +573,8 @@ function reconcileEnded(){
       const rec=LASTSEEN[id];
       rec.absent=(rec.absent||0)+1;
       if(rec.absent>=ABSENT_RUNS_TO_END){
-        if(!ENDED[id] && !BOUGHT[id]) ENDED[id]={snap:rec.snap,endedTs:Date.now()};
-        delete LASTSEEN[id];   // stop tracking once retired (or already logged as bought)
+        if(!ENDED[id]) ENDED[id]={snap:rec.snap,endedTs:Date.now()};
+        delete LASTSEEN[id];   // stop tracking once retired
       }
     }
   }
@@ -454,6 +588,8 @@ async function load(){
   catch(e){ HIST=DATA._sample?SAMPLE_HIST:[]; }
   try{ const s=await fetch("settings.json",{cache:"no-store"}); SET=s.ok?await s.json():null; }
   catch(e){ SET=null; }
+  PINNED=(SET&&Array.isArray(SET.pinned_queries))?SET.pinned_queries.slice():[];
+  DISABLED=(SET&&Array.isArray(SET.disabled_queries))?SET.disabled_queries.slice():[];
   try{ const q=await fetch("query_stats.json",{cache:"no-store"}); QSTATS=q.ok?await q.json():null; }
   catch(e){ QSTATS=null; }
   try{ const fb=await fetch("feedback.json",{cache:"no-store"});
@@ -480,9 +616,11 @@ function render(){
   TRUSTED=trustedSellers();
   const HVIEW=histView();
   const trapList=(d.traps||[]).map(t=>Object.assign({trap:true},t));
-  const pool=(F.showTraps ? d.deals.concat(trapList) : d.deals.slice());
+  // everything the engine found enters the pool; passTraits() decides what's visible,
+  // so traps / guaranteed / mixed lots share one consistent show-only-hide control
+  const pool=d.deals.concat(trapList).filter(passTraits);
 
-  // effective score = melt score + small bump for sellers you've bought from before
+  // effective score = melt score + small bump for sellers you've rated good before
   const eff=x=>x.score + (x.seller_user&&TRUSTED[x.seller_user] ? 8 : 0);
 
   let list=pool
@@ -507,13 +645,9 @@ function render(){
 
   const byKarat={}; d.deals.forEach(x=>byKarat[x.karat]=(byKarat[x.karat]||0)+1);
   const totalProfit=d.total_profit!=null?d.total_profit:d.deals.reduce((s,x)=>s+(x.profit>0?x.profit:0),0);
-  const boughtCount=Object.keys(BOUGHT).length;
-  // margin mirror: actual net where you've entered it, estimate otherwise
-  const bvals=Object.values(BOUGHT);
-  const bProfit=bvals.reduce((s,b)=>s+(b.actual_profit!=null?b.actual_profit:(b.est_profit||0)),0);
-  const bCost=bvals.reduce((s,b)=>s+(b.cost||0),0);
-  const bMargin=bCost>0?(bProfit/bCost*100):0;
-  const bActualN=bvals.filter(b=>b.actual_profit!=null).length;
+  const fbVals=Object.values(FB);
+  const fbGoodN=fbVals.filter(f=>f.verdict==="good").length;
+  const fbBadN=fbVals.filter(f=>f.verdict==="bad").length;
   const avgUnder=d.deals.length?(d.deals.reduce((s,x)=>s+x.under_pct,0)/d.deals.length).toFixed(0):0;
   const newCount=d.deals.filter(x=>NEW.has(x.id)).length;
   // staleness: results.updated older than ~3h means the scanner may have stalled
@@ -555,12 +689,77 @@ function render(){
     <section><div class="stats">
       <div class="stat"><div class="v grn">${d.deals.length}</div><div class="k">live deals</div></div>
       <div class="stat"><div class="v amb">${newCount}</div><div class="k">new since last visit</div></div>
-      <div class="stat" title="${bActualN} of ${boughtCount} with actual profit entered; rest estimated">
-        <div class="v" style="color:#c4b5fd">${boughtCount?(bMargin>0?"+":"")+bMargin.toFixed(0)+"%":boughtCount}</div>
-        <div class="k">${boughtCount?`margin · ${boughtCount} buys`:"bought (logged)"}</div></div>
+      <div class="stat" title="Every 👍/👎 reweights the search that found the listing.">
+        <div class="v" style="color:#c4b5fd">${fbGoodN}<span style="font-size:.5em;color:#737373"> / </span><span style="color:#fb7185">${fbBadN}</span></div>
+        <div class="k">rated good / bad</div></div>
       <div class="stat"><div class="v">${avgUnder}%</div><div class="k">avg under price</div></div>
     </div></section>
 
+    <section class="cmd">
+      <div class="cmd-top">
+        <div class="cmd-count"><b>${rest.length+saved.length}</b> showing<span class="cmd-sub">of ${d.deals.length+ (d.traps||[]).length} found · ${fmt(totalProfit)} on the table</span></div>
+        <button class="btn ghost sm" onclick="setF('settingsOpen',!F.settingsOpen)">engine settings</button>
+      </div>
+      <div class="cmd-grid">
+        <div class="fgroup"><span class="flabel">karat</span>
+          ${["All","10K","14K","18K","22K","24K"].map(k=>
+            `<button class="chip ${F.karat===k?"on":""}" onclick="setF('karat','${k}')">${k}</button>`).join("")}</div>
+        <div class="fgroup"><span class="flabel">sort</span>
+          ${[["score","best score"],["profit","most profit"],["age","newest"],["pricedrop","price dropped"]].map(([v,l])=>
+            `<button class="chip ${F.sortBy===v?"on":""}" onclick="setF('sortBy','${v}')">${l}</button>`).join("")}</div>
+      </div>
+      <div class="cmd-grid">
+        ${triState("trapMode","traps")}
+        ${triState("agMode","guaranteed")}
+        ${triState("mixedMode","mixed lots")}
+        <div class="fgroup"><span class="flabel">min score</span>
+          <input type="range" min="0" max="100" step="5" value="${F.minScore}" oninput="setF('minScore',+this.value)">
+          <span class="fval">${F.minScore}</span></div>
+        <div class="fgroup"><span class="flabel">min profit</span>
+          <input class="fnum" type="number" value="${F.minProfit}" oninput="setF('minProfit',+this.value||0)"></div>
+        <div class="fgroup">
+          <label class="toggle sm"><input type="checkbox" ${F.hideSeen?"checked":""} onchange="setF('hideSeen',this.checked)"> hide seen</label>
+          <label class="toggle sm"><input type="checkbox" ${F.showHidden?"checked":""} onchange="setF('showHidden',this.checked)"> show hidden</label>
+          ${SEEN.size?`<button class="chip xs" onclick="clearSet('seen')">clear seen (${SEEN.size})</button>`:""}
+          ${HIDDEN.size?`<button class="chip xs" onclick="clearSet('hidden')">clear hidden (${HIDDEN.size})</button>`:""}
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="head-row"><div class="label">${rest.length+saved.length} listing(s)</div>
+        <div class="label" style="color:#525252">👍 good · 👎 bad (asks why) · ★ saved · ✕ hide</div></div>
+      ${saved.length?`<div class="pilehdr">★ Saved (${saved.length})</div>`+saved.map(dealRow).join(""):""}
+      ${saved.length&&rest.length?`<div class="pilehdr" style="color:#a3a3a3">All listings</div>`:""}
+      ${rest.length===0&&saved.length===0?`<div class="empty">Nothing matches these filters right now.</div>`:rest.map(dealRow).join("")}
+    </section>
+
+    ${endedArr.length?`${(()=>{ const QD=queryDealData(); return `
+    <section>
+      <div class="sec-hdr" onclick="setF('showQueries',!F.showQueries)">
+        <div class="label">Deals by search term · ${QD.rows.length} tracked${QSTATS&&QSTATS.meta?` · run ${QSTATS.meta.run_counter}`:""}</div>
+        <span class="sec-toggle">${F.showQueries?"▲ collapse table":"▼ expand table"}</span>
+      </div>
+      <div class="chiprow" style="margin:6px 0 8px" onclick="event.stopPropagation()">
+        ${[["deals","most deals"],["rate","best hit rate"]].map(([v,l])=>
+          `<button class="chip xs ${F.queryMetric===v?"on":""}" onclick="setF('queryMetric','${v}')">${l}</button>`).join("")}
+      </div>
+      <div class="qwrap">${queryPerfChart(QD.rows, F.queryMetric)}</div>
+      <div class="note" style="margin:6px 0 2px;color:#525252">One bar per search term, longest = most deals found. Amber = core · purple = exploring · gray = auto-retired · red = you disabled it. Showing ${F.queryMetric==="rate"?"deals per run (hit rate)":"total deals found"}${QD.live?" — <b>from the current sweep only</b>, because no cumulative history was found":" across all tracked runs"}.</div>
+      <div class="note" style="margin:0 0 8px;color:#525252">★ pins a search so it always runs and can never be auto-retired · ✕ stops it being used at all. Both are reversible, save to <code>settings.json</code> automatically, and take effect on the next sweep.${PINNED.length||DISABLED.length?` <span style="color:#a3a3a3">${PINNED.length} pinned · ${DISABLED.length} disabled</span>`:""}</div>
+      <div id="qmsg" class="note" style="margin:0 0 8px">${QDIRTY?"saving…":""}</div>
+      ${F.showQueries?`
+        ${DATA.learning?`<div class="note" style="margin:4px 0 8px;color:#737373">Last run: ${DATA.learning.queries_ran} searches (${(DATA.learning.sorts||[]).join("+")})${(DATA.learning.explored||[]).length?` · explored: ${DATA.learning.explored.map(q=>`"${q}"`).join(", ")}`:""}${(DATA.learning.promoted||[]).length?` · <span style="color:#34d399">promoted: ${DATA.learning.promoted.join(", ")}</span>`:""}${DATA.learning.feedback_events?` · learning from ${DATA.learning.feedback_events} taps`:""}</div>`:""}
+        <div class="qwrap"><table class="qtable"><tr><th>search</th><th>runs</th><th>deals</th><th>traps</th><th>hit rate</th></tr>
+        ${QD.rows.sort((a,b)=>(b[1].deals||0)-(a[1].deals||0)).slice(0,60).map(([q,s])=>
+          `<tr><td>${q}${s.origin==="explore"?`<span class="qbadge ex">explore</span>`:""}${s.status==="promoted"?`<span class="qbadge pr">promoted</span>`:""}${s.status==="retired"?`<span class="qbadge rt">retired</span>`:""}</td>
+           <td>${s.runs||0}</td><td>${s.deals||0}</td><td>${s.traps||0}</td>
+           <td>${s.runs?((s.deals||0)/s.runs).toFixed(2):"—"}/run</td></tr>`).join("")}
+        </table></div>
+        <div class="note" style="margin-top:6px;color:#525252">Retired searches stopped earning their calls; re-add one to the query list to revive it. Promoted explorers already compete with your core list — add them there to lock them in.</div>
+      `:""}
+    </section>`; })()}
+    
     <section>
       <div class="sec-hdr" onclick="setF('showTrends',!F.showTrends)">
         <div class="label">Trends · ${HVIEW.length} of ${HIST.length||0} runs</div>
@@ -604,30 +803,19 @@ function render(){
       ${F.showPrices?`<div class="prices">${KARATS.map(k=>`<div class="price"><div class="pk">${k}</div><div class="pv">${fmt(d.prices_per_gram[k])}</div></div>`).join("")}</div>`:""}
     </section>
 
-    <section class="panel"><div class="row" style="margin-bottom:10px">
-      <div class="ctl" style="flex:1;min-width:180px"><span>Min score ${F.minScore}</span>
-        <input type="range" min="0" max="100" value="${F.minScore}" oninput="setF('minScore',+this.value)"></div>
-      <div class="ctl"><span>Min profit $</span>
-        <input type="number" min="0" step="10" value="${F.minProfit}" oninput="setF('minProfit',+this.value||0)"></div>
-    </div>
-    <div class="row" style="margin-bottom:10px">
-      <span class="label">Karat</span>
-      ${["All",...KARATS].map(k=>`<button class="chip ${F.karat===k?"on":""}" onclick="setF('karat','${k}')">${k}</button>`).join("")}
-    </div>
-    <div class="row" style="margin-bottom:10px">
-      <span class="label">Sort</span>
-      ${[["score","Best score"],["profit","Most profit"],["age","Newest listing"],["pricedrop","Price dropped"]].map(([v,l])=>
-        `<button class="chip ${F.sortBy===v?"on":""}" onclick="setF('sortBy','${v}')">${l}</button>`).join("")}
-    </div>
-    <div class="row">
-      <label class="toggle"><input type="checkbox" ${F.showTraps?"checked":""} onchange="setF('showTraps',this.checked)"> show traps</label>
-      <label class="toggle"><input type="checkbox" ${F.hideSeen?"checked":""} onchange="setF('hideSeen',this.checked)"> hide seen</label>
-      <label class="toggle"><input type="checkbox" ${F.showHidden?"checked":""} onchange="setF('showHidden',this.checked)"> show hidden</label>
-      <button class="btn ghost sm" onclick="clearSet('seen')">clear seen (${SEEN.size})</button>
-      <button class="btn ghost sm" onclick="clearSet('hidden')">clear hidden (${HIDDEN.size})</button>
-      <button class="btn ghost" style="margin-left:auto" onclick="setF('settingsOpen',!F.settingsOpen)">${F.settingsOpen?"▲ engine settings":"▼ engine settings"}</button>
-    </div></section>
+    <section>
+      <div class="sec-hdr" onclick="setF('showEnded',!F.showEnded)">
+        <div class="label">Recently sold / ended · last ${ENDED_TTL_DAYS}d (${endedArr.length})</div>
+        <span class="sec-toggle">${F.showEnded?"▲ collapse":"▼ expand"}</span>
+      </div>
+      ${F.showEnded?`
+        <div class="note" style="margin:2px 0 8px;color:#737373">Listings that dropped out of the live feed — likely sold or ended (a listing can also just be pulled by the seller, so read it as directional). A gauge of what's actually moving at these prices.</div>
+        ${endedArr.slice(0,ENDED_SHOW).map(endedRow).join("")}
+        ${endedArr.length>ENDED_SHOW?`<div class="note" style="color:#525252;margin-top:6px">+${endedArr.length-ENDED_SHOW} older not shown</div>`:""}
+      `:""}
+    </section>`:""}
 
+    
     <section class="panel ${F.settingsOpen?"":"hidden"}" id="settings">
       <div class="label" style="margin-bottom:10px">Engine settings · these change what the NEXT run does</div>
       <div class="row" style="margin-bottom:12px">
@@ -671,7 +859,7 @@ function render(){
       <div class="row" style="margin-bottom:8px">
         <button class="btn" onclick="saveSettings()">Save</button>
         <button class="btn ghost" onclick="copySettings()">Copy JSON</button>
-        <button class="btn ghost sm" onclick="exportLocal()" title="Download your bought log, saved/seen/hidden triage, and feedback — everything stored only in this browser">⬇ backup my data</button>
+        <button class="btn ghost sm" onclick="exportLocal()" title="Download your saved/seen/hidden triage and feedback — everything stored only in this browser">⬇ backup my data</button>
         <button class="btn ghost sm" onclick="document.getElementById('importfile').click()" title="Restore a backup file">⬆ restore</button>
         <input type="file" id="importfile" accept=".json" style="display:none" onchange="importLocal(this)">
         <span id="savemsg" class="note"></span>
@@ -687,63 +875,18 @@ function render(){
 
     ${d._sample?`<div class="empty" style="margin-bottom:12px;border-color:rgba(180,120,10,.4);color:#fcd34d;font-size:11px;padding:10px">Showing sample data until the scout writes results.json.</div>`:""}
     ${d.carried_from?`<div class="empty" style="margin-bottom:12px;border-color:rgba(180,120,10,.4);color:#fcd34d;font-size:11px;padding:10px">⚠ Last sweep returned nothing (likely eBay quota/API hiccup) — showing the last good results from ${new Date(d.carried_from).toLocaleString([],{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})}. Prices/availability may have shifted; the engine keeps retrying on schedule.</div>`:""}
-    ${d.traps_count>0&&!F.showTraps?`<div class="traps">⚠ ${d.traps_count} likely trap(s) hidden — flip "show traps" to inspect</div>`:""}
+    ${d.traps_count>0&&F.trapMode==="hide"?`<div class="traps">⚠ ${d.traps_count} likely trap(s) hidden — set traps to "all" or "only" to inspect</div>`:""}
+<div id="fbmsg" class="note" style="margin:8px 0"></div>
 
-    <section>
-      <div class="head-row"><div class="label">${rest.length+saved.length} listing(s)</div>
-        ${boughtCount?`<button class="btn ghost sm" onclick="clearBought()">clear bought log (${boughtCount})</button>`:`<div class="label" style="color:#525252">$ = bought · ★ saved · ✕ hide</div>`}</div>
-      ${saved.length?`<div class="pilehdr">★ Saved (${saved.length})</div>`+saved.map(dealRow).join(""):""}
-      ${saved.length&&rest.length?`<div class="pilehdr" style="color:#a3a3a3">All listings</div>`:""}
-      ${rest.length===0&&saved.length===0?`<div class="empty">Nothing matches these filters right now.</div>`:rest.map(dealRow).join("")}
-    </section>
-
-    ${endedArr.length?`
-    <section>
-      <div class="sec-hdr" onclick="setF('showEnded',!F.showEnded)">
-        <div class="label">Recently sold / ended · last ${ENDED_TTL_DAYS}d (${endedArr.length})</div>
-        <span class="sec-toggle">${F.showEnded?"▲ collapse":"▼ expand"}</span>
-      </div>
-      ${F.showEnded?`
-        <div class="note" style="margin:2px 0 8px;color:#737373">Listings that dropped out of the live feed — likely sold or ended (a listing can also just be pulled by the seller, so read it as directional). Log the ones you actually bought before they age out; the rest are a gauge of what's moving.</div>
-        ${endedArr.slice(0,ENDED_SHOW).map(endedRow).join("")}
-        ${endedArr.length>ENDED_SHOW?`<div class="note" style="color:#525252;margin-top:6px">+${endedArr.length-ENDED_SHOW} older not shown</div>`:""}
-      `:""}
-    </section>`:""}
-
-    ${QSTATS&&Object.keys(QSTATS.queries||{}).length?`
-    <section>
-      <div class="sec-hdr" onclick="setF('showQueries',!F.showQueries)">
-        <div class="label">Search performance · ${Object.keys(QSTATS.queries).length} tracked · run ${QSTATS.meta.run_counter}</div>
-        <span class="sec-toggle">${F.showQueries?"▲ collapse table":"▼ expand table"}</span>
-      </div>
-      <div class="chiprow" style="margin:6px 0 8px" onclick="event.stopPropagation()">
-        ${[["deals","most deals"],["rate","best hit rate"]].map(([v,l])=>
-          `<button class="chip xs ${F.queryMetric===v?"on":""}" onclick="setF('queryMetric','${v}')">${l}</button>`).join("")}
-      </div>
-      <div class="qwrap">${queryPerfChart(QSTATS, F.queryMetric)}</div>
-      <div class="note" style="margin:6px 0 8px;color:#525252">Amber = core query · purple = exploring · gray = retired. Bars show ${F.queryMetric==="rate"?"deals per run (hit rate)":"total deals returned"} across the tracked history below.</div>
-      ${F.showQueries?`
-        ${DATA.learning?`<div class="note" style="margin:4px 0 8px;color:#737373">Last run: ${DATA.learning.queries_ran} searches (${(DATA.learning.sorts||[]).join("+")})${(DATA.learning.explored||[]).length?` · explored: ${DATA.learning.explored.map(q=>`"${q}"`).join(", ")}`:""}${(DATA.learning.promoted||[]).length?` · <span style="color:#34d399">promoted: ${DATA.learning.promoted.join(", ")}</span>`:""}${DATA.learning.feedback_events?` · learning from ${DATA.learning.feedback_events} taps`:""}</div>`:""}
-        <div class="qwrap"><table class="qtable"><tr><th>search</th><th>runs</th><th>deals</th><th>traps</th><th>hit rate</th></tr>
-        ${Object.entries(QSTATS.queries).sort((a,b)=>(b[1].deals||0)-(a[1].deals||0)).slice(0,60).map(([q,s])=>
-          `<tr><td>${q}${s.origin==="explore"?`<span class="qbadge ex">explore</span>`:""}${s.status==="promoted"?`<span class="qbadge pr">promoted</span>`:""}${s.status==="retired"?`<span class="qbadge rt">retired</span>`:""}</td>
-           <td>${s.runs||0}</td><td>${s.deals||0}</td><td>${s.traps||0}</td>
-           <td>${s.runs?((s.deals||0)/s.runs).toFixed(2):"—"}/run</td></tr>`).join("")}
-        </table></div>
-        <div class="note" style="margin-top:6px;color:#525252">Retired searches stopped earning their calls; re-add one to the query list to revive it. Promoted explorers already compete with your core list — add them there to lock them in.</div>
-      `:""}
-    </section>`:""}
-    <div id="fbmsg" class="note" style="margin:8px 0"></div>
-
-    <div class="foot">👍/👎 on any listing teaches the engine: good taps boost that search and seller, bad taps (with a reason) push them down — bounded nudges, never vetoes, and taste ("not my style") is never punished. Feedback commits to the repo a few seconds after you tap (needs the GitHub token below). ⚡ run now triggers an immediate sweep (≈2 min, then refresh). Click a listing to open it (marks it seen). $ logs it as bought — sellers you've bought from get a ★ trusted badge and a ranking bump on future listings. When you log a buy it asks for the actual net (blank uses the melt estimate), and the "margin" tile mirrors that back so you can see whether the tool's deals turn into real money. ★ saves to the top pile, ✕ hides for good. When a listing drops out of the feed it moves to <b>Recently sold / ended</b> for ${ENDED_TTL_DAYS} days — log any you actually bought before they age out, or just watch what's selling. ${boughtCount<15?`Pattern-learning beyond trusted-sellers needs ~15+ logged buys to mean anything (you have ${boughtCount}); keep logging and it gets smarter.`:''} All triage is stored on this device. Stated weight and photos still need your eye before bidding.</div>`;
+    <div class="foot">👍/👎 on any listing is the only thing that teaches the engine. 👍 boosts that search term and seller; 👎 opens a short "why?" prompt, and the reason decides what gets penalised — plated or wrong-weight hits push the <b>search term</b> down hard, a sketchy seller pushes the <b>seller</b> down, and "not profitable" or "not my style" are recorded but never punish anything, because those are pricing and taste rather than a bad search. Nothing you tap ever edits the scoring rules themselves; it only changes which searches get run and how they rank. Ratings commit to the repo a few seconds after you tap (needs the GitHub token below). ⚡ run now triggers an immediate sweep (≈2 min, then refresh). Click a listing to open it (marks it seen). ★ saves to the top pile, ✕ hides for good. Sellers you repeatedly rate good earn a ★ trusted badge and a small ranking bump. When a listing drops out of the feed it moves to <b>Recently sold / ended</b> for ${ENDED_TTL_DAYS} days. All triage is stored on this device. Stated weight and photos still need your eye before bidding.</div>`;
 }
 
 function dealRow(x){
   const st=scoreStyle(x.score), isNew=NEW.has(x.id), seen=SEEN.has(x.id), saved=SAVED.has(x.id);
-  const bought=!!BOUGHT[x.id], fb=FB[x.id];
+  const fb=FB[x.id];
   const trusted=x.seller_user && TRUSTED[x.seller_user];
-  const cls=["deal"]; if(x.trap)cls.push("trap"); if(seen&&!saved&&!bought)cls.push("seen");
-  if(saved)cls.push("saved"); if(bought)cls.push("bought");
+  const cls=["deal"]; if(x.trap)cls.push("trap"); if(seen&&!saved)cls.push("seen");
+  if(saved)cls.push("saved"); if(fb&&fb.verdict==="bad")cls.push("rated-bad");
   const tags=[
     isNew?'<span class="tag n">new</span>':'',
     x.auth_guaranteed?'<span class="tag ag">🛡 authenticity guarantee</span>':'',
@@ -778,15 +921,14 @@ function dealRow(x){
     <div class="acts">
       <button class="iact ${fb&&fb.verdict==="good"?"on":""}" title="good find — teach the engine" onclick="fbGood('${x.id}')">👍</button>
       <button class="iact ${fb&&fb.verdict==="bad"?"bad":""}" title="bad find — say why, engine learns" onclick="fbBad('${x.id}')">👎</button>
-      <button class="iact ${bought?"on":""}" title="${bought?'bought ✓':'mark as bought'}" onclick="markBought('${x.id}')">$</button>
       <button class="iact ${saved?"on":""}" title="save" onclick="toggleSet('saved','${x.id}')">★</button>
       <button class="iact" title="hide" onclick="toggleSet('hidden','${x.id}')">✕</button>
       <button class="copy-btn" title="copy link" onclick="copyLink('${x.url}',event)">⎘</button>
     </div></div>
-    ${F.fbOpen===x.id?`<div class="fbcats">why is it bad? ${FB_CATS.map(([k,l])=>
+    ${false?`<div class="fbcats">${FB_CATS.map(([k,l])=>
       `<button class="chip" onclick="fbBadCat('${x.id}','${k}')">${l}</button>`).join("")}
       <button class="chip" onclick="F.fbOpen=null;render()">cancel</button></div>`:""}
-    ${fb&&fb.verdict==="bad"&&fb.category?`<div class="fbnote">👎 ${(FB_CATS.find(c=>c[0]===fb.category)||["","flagged"])[1]} — the engine deprioritizes this pattern</div>`:""}`;
+    ${fb&&fb.verdict==="bad"&&fb.category?(()=>{const c=FB_CATS.find(c=>c[0]===fb.category)||["","flagged","recorded"];return `<div class="fbnote">👎 ${c[1]} — ${c[2]}</div>`;})():""}`;
 }
 
 function endedRow(x){
@@ -805,34 +947,11 @@ function endedRow(x){
         </div>
       </div></a>
     <div class="acts">
-      <button class="iact" title="I bought this — log it" onclick="markBoughtEnded('${x.id}')">$</button>
       <button class="iact" title="dismiss" onclick="dismissEnded('${x.id}')">✕</button>
     </div></div>`;
 }
 
 function markSeen(id){ SEEN.add(id); persist(); /* no re-render: let the click open the tab */ }
-function logBuy(x){
-  const cost=(x.price||0)+(x.ship||0), est=x.profit||0;
-  const ans=prompt(`Logged as bought.\n\nActual net profit on this one once you flip it?\nLeave blank to use the estimate ($${est.toFixed(0)}).`,"");
-  const actual=(ans!==null&&ans.trim()!=="")?parseFloat(ans.replace(/[^0-9.\-]/g,"")):null;
-  BOUGHT[x.id]={seller:x.seller_user||"",karat:x.karat,price:x.price,grams:x.grams,
-                cost:cost, est_profit:est, actual_profit:isFinite(actual)?actual:null,
-                ts:Date.now(),title:x.title};
-}
-function markBought(id){
-  if(BOUGHT[id]){ delete BOUGHT[id]; }
-  else{
-    const x=[...(DATA.deals||[]),...(DATA.traps||[])].find(d=>d.id===id);
-    if(x){ logBuy(x); SEEN.add(id); }
-  }
-  persist(); render();
-}
-function markBoughtEnded(id){
-  const rec=ENDED[id]; if(!rec) return;
-  logBuy(rec.snap);            // snap carries id,title,karat,price,ship,profit,seller_user
-  delete ENDED[id];
-  persist(); render();
-}
 function dismissEnded(id){ delete ENDED[id]; persist(); render(); }
 function toggleSet(which,id){
   const set = which==="saved"?SAVED:HIDDEN;
@@ -841,7 +960,6 @@ function toggleSet(which,id){
   persist(); render();
 }
 function clearSet(which){ (which==="seen"?SEEN:HIDDEN).clear(); persist(); render(); }
-function clearBought(){ if(confirm("Clear your entire bought log? This removes the trusted-seller history.")){ BOUGHT={}; persist(); render(); } }
 function copyLink(url,e){ e.stopPropagation(); e.preventDefault();
   navigator.clipboard.writeText(url).then(()=>{
     const b=e.target; const orig=b.textContent; b.textContent='✓'; b.style.color='#34d399';
@@ -880,8 +998,26 @@ function fbGood(id){ const x=findDeal(id); if(!x) return;
   if(FB[id]&&FB[id].verdict==="good"){ delete FB[id]; persistFB(); render(); return; } // undo
   fbEvent(x,"good"); }
 function fbBad(id){ if(FB[id]&&FB[id].verdict==="bad"){ delete FB[id]; persistFB(); render(); return; }
-  F.fbOpen=(F.fbOpen===id?null:id); render(); }
-function fbBadCat(id,cat){ const x=findDeal(id); if(!x) return; F.fbOpen=null; fbEvent(x,"bad",cat); }
+  F.fbOpen=id; renderModal(); }
+function fbBadCat(id,cat){ const x=findDeal(id); if(!x){ fbCancel(); return; }
+  F.fbOpen=null; fbEvent(x,"bad",cat); renderModal(); }
+function fbCancel(){ F.fbOpen=null; renderModal(); render(); }
+function renderModal(){
+  let el=document.getElementById("fbmodal");
+  if(!el){ el=document.createElement("div"); el.id="fbmodal"; document.body.appendChild(el); }
+  if(!F.fbOpen){ el.innerHTML=""; document.body.style.overflow=""; return; }
+  const x=findDeal(F.fbOpen);
+  if(!x){ F.fbOpen=null; el.innerHTML=""; return; }
+  document.body.style.overflow="hidden";
+  el.innerHTML=`<div class="modal-bg" onclick="if(event.target===this)fbCancel()">
+    <div class="modal" role="dialog" aria-modal="true">
+      <h4>Why is this a poor deal?</h4>
+      <div class="mtitle">${esc(x.title||"")}</div>
+      ${FB_CATS.map(([k,l,eff])=>`<button class="mopt" onclick="fbBadCat('${x.id}','${k}')">${l}<span class="msub">${eff}</span></button>`).join("")}
+      <button class="chip" style="margin-top:8px" onclick="fbCancel()">cancel</button>
+    </div></div>`;
+}
+document.addEventListener("keydown",e=>{ if(e.key==="Escape"&&F.fbOpen) fbCancel(); });
 function findDeal(id){ return [...(DATA.deals||[]),...(DATA.traps||[])].find(d=>d.id===id); }
 let _fbTimer=null;
 function scheduleFBFlush(){ clearTimeout(_fbTimer); _fbTimer=setTimeout(flushFeedback, 4000); }
@@ -912,7 +1048,7 @@ function fbmsg(t,c){ const e=document.getElementById("fbmsg"); if(e){ e.textCont
 function exportLocal(){
   const dump={_gscout_backup:1, exported:new Date().toISOString(),
     seen:[...SEEN], hidden:[...HIDDEN], saved:[...SAVED], known:[...KNOWN],
-    bought:BOUGHT, lastseen:LASTSEEN, ended:ENDED, fb:FB, fb_pending:FB_PENDING, ui};
+    lastseen:LASTSEEN, ended:ENDED, fb:FB, fb_pending:FB_PENDING, ui};
   const a=document.createElement("a");
   a.href=URL.createObjectURL(new Blob([JSON.stringify(dump,null,1)],{type:"application/json"}));
   a.download=`gscout-backup-${new Date().toISOString().slice(0,10)}.json`;
@@ -928,14 +1064,13 @@ function importLocal(input){
     // merge (union/latest-wins) so restoring an old backup never erases newer activity
     (d.seen||[]).forEach(x=>SEEN.add(x)); (d.hidden||[]).forEach(x=>HIDDEN.add(x));
     (d.saved||[]).forEach(x=>SAVED.add(x)); (d.known||[]).forEach(x=>KNOWN.add(x));
-    BOUGHT=Object.assign({},d.bought||{},BOUGHT);
     LASTSEEN=Object.assign({},d.lastseen||{},LASTSEEN);
     ENDED=Object.assign({},d.ended||{},ENDED);
     Object.entries(d.fb||{}).forEach(([id,e])=>{ if(!FB[id]||((e.ts||0)>(FB[id].ts||0))) FB[id]=e; });
     const have=new Set(FB_PENDING.map(e=>e.id+":"+e.ts));
     (d.fb_pending||[]).forEach(e=>{ if(!have.has(e.id+":"+e.ts)) FB_PENDING.push(e); });
     persist(); persistFB(); if(FB_PENDING.length) scheduleFBFlush();
-    msg(`restored — ${Object.keys(d.bought||{}).length} buys, ${(d.saved||[]).length} saved merged in`,"#34d399");
+    msg(`restored — ${Object.keys(d.fb||{}).length} ratings, ${(d.saved||[]).length} saved merged in`,"#34d399");
     render();
   }catch(e){ msg("restore failed: "+e.message,"#fb7185"); }
   input.value=""; };
@@ -961,6 +1096,7 @@ function gatherSettings(){
     exclude_mixed:!!document.getElementById("s_nomixed")?.checked,
     auth_guarantee_only:!!document.getElementById("s_agonly")?.checked,
     delivery_postal_code:(document.getElementById("s_zip")?.value||"").trim(),
+    pinned_queries:PINNED, disabled_queries:DISABLED,
     explore_enabled:!!document.getElementById("s_explore")?.checked,
     explore_frac:v("s_exfrac",12)/100,
     explore_pool:pool,
@@ -979,20 +1115,23 @@ function copySettings(){ const j=JSON.stringify(gatherSettings(),null,2);
 function saveToken(){ const t=document.getElementById("s_token").value.trim();
   if(t)localStorage.setItem("gdd_token",t); else localStorage.removeItem("gdd_token");
   msg(t?"token saved on this device":"token cleared","#34d399"); }
-async function saveSettings(){
+async function saveSettings(quiet){
   const body=JSON.stringify(gatherSettings(),null,2), token=localStorage.getItem("gdd_token");
-  if(!token){ copySettings(); return; }
+  const say=(t,c)=>{ msg(t,c); if(quiet) qmsg(t,c); };
+  if(!token){ if(quiet){ qmsg("no GitHub token — open engine settings to add one, or use Copy JSON","#fcd34d"); return false; } copySettings(); return false; }
   const owner=location.hostname.split(".")[0], repo=location.pathname.split("/").filter(Boolean)[0];
-  if(!owner||!repo){ msg("couldn't detect repo; use Copy JSON","#fb7185"); return; }
+  if(!owner||!repo){ say("couldn't detect repo; use Copy JSON","#fb7185"); return false; }
   const api=`https://api.github.com/repos/${owner}/${repo}/contents/settings.json`;
   const hdr={Authorization:`Bearer ${token}`,Accept:"application/vnd.github+json"};
-  msg("saving to GitHub…");
+  say("saving to GitHub…");
   try{ let sha; const g=await fetch(api+"?ref=main",{headers:hdr}); if(g.ok) sha=(await g.json()).sha;
     const put=await fetch(api,{method:"PUT",headers:hdr,body:JSON.stringify({
       message:"update settings from dashboard",content:btoa(unescape(encodeURIComponent(body))),sha,branch:"main"})});
-    msg(put.ok?"saved — takes effect next run":"save failed ("+put.status+"); use Copy JSON","#"+(put.ok?"34d399":"fb7185"));
-  }catch(e){ msg("save error; use Copy JSON instead","#fb7185"); }
+    say(put.ok?"saved — takes effect next run":"save failed ("+put.status+"); use Copy JSON","#"+(put.ok?"34d399":"fb7185"));
+    return put.ok;
+  }catch(e){ say("save error; use Copy JSON instead","#fb7185"); return false; }
 }
+function qmsg(t,c){ const e=document.getElementById("qmsg"); if(e){ e.textContent=t; e.style.color=c||"#737373"; } }
 
 load();
 setInterval(()=>{

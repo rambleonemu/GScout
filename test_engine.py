@@ -28,11 +28,31 @@ check("grams: sane clamp rejects 5000g", gs.extract_grams("necklace 5000 grams")
 check("grams: dwt converts", abs(gs.extract_grams("10 dwt scrap") - 15.55) < 0.01)
 check("gold-wt: '8.2g of gold' specific", gs.extract_gold_grams("lot with 8.2g of gold") == 8.2)
 
-# ---------- comma-decimal weight bug ----------
-check("grams: '13,25g' reads as 13.25, not 25", gs.extract_grams("14k gold ring 13,25g") == 13.25)
-check("grams: '5,5 dwt' comma decimal converts", abs(gs.extract_grams("10k chain 5,5 dwt") - 8.55) < 0.01)
-check("grams: plain '13.25g' unaffected", gs.extract_grams("14k gold ring 13.25g") == 13.25)
+# ---------- split-decimal weight parsing ----------
+# Sellers break the decimal constantly: European commas and stray spaces after the
+# point. Left unjoined, only the fractional part matches and the weight inflates --
+# a real listing titled "12. 23 grams" priced ABOVE melt was scored as a $550 profit.
+_G = [("14k gold ring 13,25g",                     13.25,  "european comma"),
+      ("10k chain 5,5 dwt",                         8.55,  "comma + dwt"),
+      ("14k gold ring 13.25g",                     13.25,  "plain decimal unaffected"),
+      ("clip earrings 12. 23 grams",               12.23,  "space AFTER the point"),
+      ("14k chain 8 .5g",                            8.5,  "space BEFORE the point"),
+      ("14k chain 8 . 5 grams",                      8.5,  "spaces both sides"),
+      ("14k 6,75 g pendant",                        6.75,  "comma + spaced unit"),
+      ("14k gold 12.235 grams",                   12.235,  "3-decimal untouched"),
+      ("bulk 1,500 grams scrap",                  1500.0,  "thousands separator kept whole"),
+      ("scrap lot 1,234.56 grams",               1234.56,  "thousands + decimal"),
+      # guards: things that must NOT be glued together
+      ("lot of 12 rings 23 grams",                  23.0,  "bare space is not a decimal"),
+      ("Price $1,225. 23 grams total",              23.0,  "price digits never glue to weight"),
+      ("sold 3 items, 45 g total",                  45.0,  "comma after a word is not a decimal")]
+for _t, _exp, _why in _G:
+    _got = gs.extract_grams(_t)
+    check(f"grams: {_why}", _got is not None and abs(_got - _exp) < 0.011,
+          f"got {_got} want {_exp} from {_t!r}")
 check("gold-wt: comma decimal in gold-specific weight", gs.extract_gold_grams("8,5g of gold content") == 8.5)
+check("gold-wt: spaced decimal in gold-specific weight",
+      gs.extract_gold_grams("total 40g, gold weight: 12. 23 grams") == 12.23)
 
 # ---------- watch exclusion ----------
 check("watch: 'mens watch' excluded even if titled solid gold",
@@ -107,20 +127,47 @@ pool = gs.explore_candidates(cfg2, stats)
 check("promoted leaves explore pool", "14k gold wedding band grams" not in pool)
 check("explore pool generates from term lists", len(pool) > 10)
 
+# ---------- manual query overrides: pin / disable ----------
+cfgP = copy.deepcopy(cfg2)
+cfgP["pinned_queries"]  = ["core1"]          # core1 was auto-retired above
+cfgP["disabled_queries"] = ["core0"]         # core0 is the star performer
+statsP = copy.deepcopy(stats)
+coreP, exploreP, _ = gs.select_queries(cfgP, statsP, {})
+check("pin: retired query resurrected by pinning", "core1" in coreP)
+check("disable: top performer dropped despite best value", "core0" not in coreP)
+gs.update_query_stats(cfgP, statsP, coreP + exploreP, [])
+check("pin: status cleared of 'retired'", statsP["queries"]["core1"].get("status") != "retired")
+check("pin: flagged in stats", statsP["queries"]["core1"].get("pinned") is True)
+check("disable: marked disabled in stats", statsP["queries"]["core0"].get("status") == "disabled")
+
+# a pinned query must survive the retirement sweep no matter how badly it does
+statsP["queries"]["core1"].update({"runs": 999, "deals": 0, "traps": 0})
+_, retiredP = gs.update_query_stats(cfgP, statsP, ["core1"], [])
+check("pin: immune to auto-retirement", "core1" not in retiredP
+      and statsP["queries"]["core1"].get("status") != "retired")
+
+# disabled queries must never be re-offered for exploration either
+cfgX = copy.deepcopy(cfg2)
+cfgX["disabled_queries"] = [gs.explore_candidates(cfgX, stats)[0]]
+check("disable: excluded from explore pool",
+      cfgX["disabled_queries"][0] not in gs.explore_candidates(cfgX, stats))
+
+# re-enabling clears the disabled status rather than stranding it
+cfgR = copy.deepcopy(cfgP); cfgR["disabled_queries"] = []
+gs.update_query_stats(cfgR, statsP, ["core0"], [])
+check("disable: re-enabling clears status", statsP["queries"]["core0"].get("status") != "disabled")
+
+# pinned queries are seated first, so pinning more than the slot count can't starve the run
+cfgF = copy.deepcopy(cfg2); cfgF["pinned_queries"] = cfgF["queries"][:]
+coreF, exploreF, sortsF = gs.select_queries(cfgF, copy.deepcopy(stats), {})
+estF = (len(coreF) + len(exploreF)) * len(sortsF) + cfgF["max_detail_calls"]
+check("pin: over-pinning still respects the call budget", estF <= 4500/48 + 1, f"{estF}")
+
 # sort alternation flips with counter
 s_even = gs.sorts_for_run(cfg2, 0); s_odd = gs.sorts_for_run(cfg2, 1)
 check("alternate: sorts flip between runs", s_even != s_odd)
 
-# mixed exclusion toggle
-cfg3 = copy.deepcopy(gs.CONFIG); cfg3["exclude_mixed"] = True; cfg3["auth_guarantee_only"] = False
-item = {"price":{"value":"500"},"seller":{"feedbackPercentage":"99.5","feedbackScore":"800"},
-        "title":"14k and 10k gold lot 20 grams","itemId":"z1","itemWebUrl":"u","buyingOptions":[]}
-check("mixed: excluded when toggle on", gs.evaluate(item, 132.0, cfg3) is None)
-cfg3["exclude_mixed"] = False
-r = gs.evaluate(item, 132.0, cfg3)
-check("mixed: allowed + floored when toggle off", r is not None and r["karat"] == "10K")
-
-# ---------- authenticity guarantee filter ----------
+# ---------- authenticity guarantee: a tag, never a filter ----------
 ag_item = {"price":{"value":"500"},"seller":{"feedbackPercentage":"99.5","feedbackScore":"800"},
            "title":"14k solid gold rope chain 10 grams","itemId":"ag1","itemWebUrl":"u",
            "buyingOptions":[], "qualifiedPrograms":["AUTHENTICITY_GUARANTEE"]}
@@ -134,35 +181,46 @@ check("ag: qualifiedPrograms array detected", gs.auth_guaranteed(ag_item))
 check("ag: authenticityGuarantee container detected", gs.auth_guaranteed(detail_item))
 check("ag: plain item not flagged", not gs.auth_guaranteed(plain_item))
 
-cfgAG = copy.deepcopy(gs.CONFIG); cfgAG["auth_guarantee_only"] = True
-r_ag = gs.evaluate(ag_item, 132.0, cfgAG)
-check("ag-only on: AG item still evaluated", r_ag is not None and r_ag["auth_guaranteed"] is True)
-check("ag-only on: non-AG item dropped", gs.evaluate(plain_item, 132.0, cfgAG) is None)
-cfgAG["auth_guarantee_only"] = False
-r_plain = gs.evaluate(plain_item, 132.0, cfgAG)
-check("ag-only off: non-AG item now allowed", r_plain is not None and r_plain["auth_guaranteed"] is False)
+cfgAG = copy.deepcopy(gs.CONFIG)
+r_ag, r_plain = gs.evaluate(ag_item, 132.0, cfgAG), gs.evaluate(plain_item, 132.0, cfgAG)
+check("ag: guaranteed item tagged true", r_ag is not None and r_ag["auth_guaranteed"] is True)
+check("ag: non-guaranteed item still surfaces", r_plain is not None)
+check("ag: non-guaranteed item tagged false", r_plain is not None and r_plain["auth_guaranteed"] is False)
 
+# REGRESSION: the eBay query must stay unrestricted. Adding qualifiedPrograms without
+# deliveryCountry + deliveryPostalCode returns HTTP 200 with zero items — a silent
+# outage that once took the scanner down for ~19h. Filtering happens in the UI now.
 import unittest.mock as mock
 resp = mock.Mock(status_code=200); resp.json.return_value = {"itemSummaries": []}
-def _filter_for(cfg):
-    with mock.patch.object(gs.requests, "get", return_value=resp) as mget:
-        gs.search("tok", "14k gold ring grams", 50, cfg=cfg)
-        return mget.call_args.kwargs["params"]["filter"]
-filt_on  = _filter_for({"auth_guarantee_only": True, "delivery_postal_code": "33101"})
-filt_off = _filter_for({"auth_guarantee_only": False})
-filt_nozip = _filter_for({"auth_guarantee_only": True, "delivery_postal_code": ""})
-check("ag-only on: eBay filter includes qualifiedPrograms", "qualifiedPrograms:{AUTHENTICITY_GUARANTEE}" in filt_on)
-check("ag-only off: eBay filter omits qualifiedPrograms", "qualifiedPrograms" not in filt_off)
-# REGRESSION: eBay silently returns zero items for qualifiedPrograms unless BOTH
-# deliveryCountry and deliveryPostalCode accompany it. Shipping one without the
-# others took the scanner down for ~19h with HTTP 200s and no error signal.
-check("ag-only on: deliveryCountry accompanies qualifiedPrograms", "deliveryCountry:US" in filt_on)
-check("ag-only on: deliveryPostalCode accompanies qualifiedPrograms", "deliveryPostalCode:33101" in filt_on)
-check("ag-only never sent without both companions",
-      ("qualifiedPrograms" not in filt_on) or
-      ("deliveryCountry:US" in filt_on and "deliveryPostalCode:" in filt_on))
-check("ag-only with blank zip: degrades to unfiltered, not silent-zero",
-      "qualifiedPrograms" not in filt_nozip)
+with mock.patch.object(gs.requests, "get", return_value=resp) as mget:
+    gs.search("tok", "14k gold ring grams", 50, cfg=cfgAG)
+    filt = mget.call_args.kwargs["params"]["filter"]
+check("search: no qualifiedPrograms in the eBay query", "qualifiedPrograms" not in filt)
+check("search: no deliveryPostalCode dependency", "deliveryPostalCode" not in filt)
+
+# ---------- mixed lots: a tag, never a filter ----------
+mixed_item = {"price":{"value":"500"},"seller":{"feedbackPercentage":"99.5","feedbackScore":"800"},
+              "title":"14k and 10k gold lot 20 grams","itemId":"mx1","itemWebUrl":"u","buyingOptions":[]}
+r_mixed = gs.evaluate(mixed_item, 132.0, copy.deepcopy(gs.CONFIG))
+check("mixed: lot still surfaces", r_mixed is not None)
+check("mixed: tagged as mixed", r_mixed is not None and r_mixed["mixed_lot"] is True)
+check("mixed: priced at the lowest karat floor", r_mixed is not None and r_mixed["karat"] == "10K")
+check("mixed: carries an explanatory note", r_mixed is not None and "floor" in (r_mixed["mixed_note"] or ""))
+
+# ---------- per-search hit breakdown feeds the bar chart ----------
+cfgB = copy.deepcopy(gs.CONFIG); cfgB["query_stats_file"] = "_test_qs2.json"
+statsB = {"meta": {"run_counter": 0}, "queries": {}}
+gs.update_query_stats(cfgB, statsB, ["qb"], [
+    {"query":"qb","trap":False,"score":85,"auth_guaranteed":True,"mixed_lot":False},
+    {"query":"qb","trap":False,"score":40,"auth_guaranteed":False,"mixed_lot":True},
+    {"query":"qb","trap":True, "score":10,"auth_guaranteed":False,"mixed_lot":False}])
+_b = statsB["queries"]["qb"]
+check("breakdown: strong deals counted", _b.get("strong") == 1)
+check("breakdown: weak deals counted", _b.get("weak") == 1)
+check("breakdown: traps counted separately", _b.get("traps") == 1)
+check("breakdown: strong+weak equals deals", _b.get("strong",0)+_b.get("weak",0) == _b.get("deals"))
+check("breakdown: ag counted", _b.get("ag") == 1)
+check("breakdown: mixed counted", _b.get("mixed") == 1)
 
 # ---------- history metrics + trim behavior ----------
 cfgH = copy.deepcopy(gs.CONFIG)

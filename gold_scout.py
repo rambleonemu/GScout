@@ -68,14 +68,9 @@ CONFIG = {
 
     # ---- content filters ----
     "exclude_mixed": True,      # drop multi-karat items entirely (lots, pendant-on-chain combos)
-    "auth_guarantee_only": True,  # only surface items qualified for eBay's Authenticity Guarantee
-                                  # program — filtered at the API call AND re-checked per item, so
-                                  # flipping this off in settings.json / the dashboard is the only
-                                  # thing needed to go back to unrestricted results
-    "delivery_postal_code": "33101",  # REQUIRED whenever auth_guarantee_only is on: eBay only
-                                  # honours the qualifiedPrograms filter alongside deliveryCountry
-                                  # + deliveryPostalCode. Also scopes results to items that will
-                                  # actually ship to you. Change to your own ZIP.
+    # NOTE: Authenticity Guarantee and mixed-karat lots are display filters, not search
+    # or scoring filters — see search() and evaluate_core(). The dashboard decides what
+    # to show; the engine always collects and scores both.
 
     # ---- feedback learning (👍/👎 taps from the dashboard -> feedback.json) ----
     "feedback_file": "feedback.json",
@@ -94,6 +89,13 @@ CONFIG = {
         "other":        {"query": 0.0, "seller": 0.0},
     },
 
+    # ---- manual query overrides (set from the dashboard's deals-by-search chart) ----
+    # These are your explicit calls and always beat the engine's automatic judgement:
+    # pinned queries can never be auto-retired and always get a slot; disabled queries
+    # are never run, never explored, and never resurrected by promotion.
+    "pinned_queries": [],
+    "disabled_queries": [],
+
     # ---- dynamic query engine ----
     "query_stats_file": "query_stats.json",
     "explore_enabled": True,
@@ -103,6 +105,8 @@ CONFIG = {
     "retire_min_runs": 25,      # a query this many runs old with 0 deals AND 0 traps -> retired
     "starvation_cap": 6,        # rotation cadence hint (informational)
     "exploit_share": 0.7,       # share of core slots locked to proven top performers
+    "strong_score": 70,         # at or above this, a deal counts as "strong" in the
+                                # per-search breakdown (matches the default alert floor)
     "spot_stale_max_hours": 24, # how old a cached spot price may be during API outages
     # term lists the auto-explorer combines when your own pool runs dry
     "explore_karats": ["10k", "14k", "18k"],
@@ -171,12 +175,27 @@ FINENESS_RE = re.compile(r"(?<![\d$.])(417|585|750|916|990|999)(?!\.?\d)")
 GRAM_RE  = re.compile(r"(\d*\.?\d+)\s?(?:g\b|gr\b|gram|grams)", re.I)
 DWT_RE   = re.compile(r"(\d*\.?\d+)\s?(?:dwt|pennyweight|penny\s?weight)\b", re.I)
 FRACTION_RE = re.compile(r"(\d+)\s*/\s*(\d+)\s?(?:g\b|gr\b|gram|grams)", re.I)
-# European-style decimal commas: "13,25g" means 13.25 grams, not two separate numbers.
-# Only treated as a decimal (not a thousands separator) when 1-2 digits follow the comma
-# and a weight unit comes right after -- real thousands separators group in 3s, and gold
-# jewelry never legitimately weighs in the thousands of grams anyway.
-COMMA_DECIMAL_RE = re.compile(
-    r"(\d+),(\d{1,2})(?=\s?(?:g\b|gr\b|grams?\b|dwt\b|pennyweight))", re.I)
+# Split decimals: sellers type "13,25g" (European comma) and "12. 23 grams" (stray space
+# after the point) constantly. Left alone, the leading digits are orphaned and only the
+# fractional part matches GRAM_RE -- "12. 23 grams" reads as 23g, nearly doubling the
+# apparent melt value and manufacturing a deal that isn't there. Rejoin them first.
+#
+# Guards, each load-bearing:
+#   (?<![\d.,$])  the number can't already be part of a bigger one, so a price like
+#                 "$1,225. 23 grams" won't glue into 225.23 -- it still reads 23g.
+#   [.,]          an explicit separator is required; bare "12 23 grams" is NOT joined,
+#                 because that's usually a count next to a weight ("12 rings 23 grams").
+#   \d{1,2}       real thousands separators group in 3s, so this can't eat "1,500 grams".
+# Thousands separators, stripped before the decimal-split pass below: "1,500 grams"
+# must become 1500, not 500 (GRAM_RE would otherwise match only the trailing group).
+# Requires groups of exactly 3 digits, which is what distinguishes it from the
+# decimal-comma case above -- "13,25g" has 2 and is left for DECIMAL_SPLIT_RE.
+THOUSANDS_RE = re.compile(
+    r"(?<![\d.,$])(\d{1,3}(?:,\d{3})+)(?=(?:\.\d+)?\s*(?:g\b|gr\b|grams?\b|dwt\b|pennyweight))",
+    re.I)
+DECIMAL_SPLIT_RE = re.compile(
+    r"(?<![\d.,$])(\d+)\s*[.,]\s*(\d{1,2})(?=\s*(?:g\b|gr\b|grams?\b|dwt\b|pennyweight))",
+    re.I)
 DWT_TO_G = 1.55517
 # Weight explicitly attributed to gold (so we can price off gold, not total weight)
 GOLD_WT_RES = [
@@ -212,11 +231,13 @@ def karats_in_text(text):
 
 def extract_grams(text):
     """Weight in grams from text. Handles fractions (1/2), leading decimals (.5),
-    plain grams, pennyweight (dwt), and European comma decimals (13,25g). Fractions
-    are checked first so '1/2 gram' isn't misread as 2 grams."""
+    plain grams, pennyweight (dwt), and split decimals where the separator is a comma
+    or has stray spaces around it (13,25g / 12. 23 grams / 8 . 5g). Fractions are
+    checked first so '1/2 gram' isn't misread as 2 grams."""
     if not text:
         return None
-    text = COMMA_DECIMAL_RE.sub(r"\1.\2", text)
+    text = THOUSANDS_RE.sub(lambda m: m.group(1).replace(",", ""), text)
+    text = DECIMAL_SPLIT_RE.sub(r"\1.\2", text)
     m = FRACTION_RE.search(text)
     if m:
         num, den = float(m.group(1)), float(m.group(2))
@@ -247,7 +268,8 @@ def extract_gold_grams(text):
     if no gold-specific weight is stated."""
     if not text:
         return None
-    text = COMMA_DECIMAL_RE.sub(r"\1.\2", text)
+    text = THOUSANDS_RE.sub(lambda m: m.group(1).replace(",", ""), text)
+    text = DECIMAL_SPLIT_RE.sub(r"\1.\2", text)
     for rx in GOLD_WT_RES:
         m = rx.search(text)
         if m:
@@ -318,11 +340,12 @@ def load_settings(cfg):
               "history_max", "spot_stale_max_hours"):
         if isinstance(s.get(k), (int, float)):
             cfg[k] = s[k]
-    for k in ("exclude_mixed", "explore_enabled", "auth_guarantee_only"):
+    for k in ("exclude_mixed", "explore_enabled"):
         if isinstance(s.get(k), bool):
             cfg[k] = s[k]
-    if s.get("delivery_postal_code") is not None:
-        cfg["delivery_postal_code"] = str(s["delivery_postal_code"]).strip()
+    for k in ("pinned_queries", "disabled_queries"):
+        if isinstance(s.get(k), list):
+            cfg[k] = [str(q).strip() for q in s[k] if str(q).strip()]
     if s.get("sort_mode") in ("alternate", "both", "price", "newlyListed"):
         cfg["sort_mode"] = s["sort_mode"]
     if isinstance(s.get("explore_pool"), list):
@@ -354,8 +377,7 @@ def load_settings(cfg):
     if words:
         EXTRA_EXCLUDE_RE = re.compile(r"\b(" + "|".join(words) + r")\b", re.I)
     print(f"settings.json: {len(cfg['queries'])} queries · payout {cfg['payout_pct']} · "
-          f"trap {cfg['trap_under_pct']} · {len(words)} extra excludes · "
-          f"auth-guarantee-only {cfg.get('auth_guarantee_only', True)}")
+          f"trap {cfg['trap_under_pct']} · {len(words)} extra excludes")
 
 
 # ======================== feedback learning engine =========================
@@ -471,8 +493,10 @@ def explore_candidates(cfg, stats):
             q = f"{k} gold {item} grams"
             if q not in active and q not in pool:
                 pool.append(q)
+    disabled = set(cfg.get("disabled_queries") or ())
     return [q for q in pool
-            if known.get(q, {}).get("status") not in ("retired", "promoted")]
+            if q not in disabled
+            and known.get(q, {}).get("status") not in ("retired", "promoted")]
 
 
 def select_queries(cfg, stats, query_mult):
@@ -493,11 +517,17 @@ def select_queries(cfg, stats, query_mult):
     slots = max(4, slots)
 
     qs = stats["queries"]
-    # core = your settings list + explorers that earned promotion, minus retirees
+    pinned = [q for q in (cfg.get("pinned_queries") or []) if q]
+    disabled = set(cfg.get("disabled_queries") or ())
+    # core = your settings list + explorers that earned promotion, minus retirees.
+    # A pinned query survives auto-retirement; a disabled one is dropped outright,
+    # whatever the engine thinks of its numbers.
     promoted = [q for q, st in qs.items()
                 if st.get("status") == "promoted" and q not in cfg["queries"]]
-    active = [q for q in list(cfg["queries"]) + promoted
-              if qs.get(q, {}).get("status") != "retired"]
+    active = [q for q in list(cfg["queries"]) + promoted + pinned
+              if q not in disabled
+              and (q in pinned or qs.get(q, {}).get("status") != "retired")]
+    active = list(dict.fromkeys(active))          # de-dupe, keep order
 
     def value(q):
         st = qs.get(q, {})
@@ -513,19 +543,24 @@ def select_queries(cfg, stats, query_mult):
             explore = pool[:n_ex]
 
     # two-tier core fill: proven earners are never evicted by rotation —
-    # exploit_share of slots goes to top value, the rest to least-recently-run
+    # exploit_share of slots goes to top value, the rest to least-recently-run.
+    # Pinned queries are seated first and never compete for the remaining slots.
     core_slots = max(0, slots - len(explore))
-    ranked = sorted(active, key=lambda q: -value(q))
-    n_top = min(core_slots, max(1, int(core_slots * cfg.get("exploit_share", 0.7))))
-    core = ranked[:n_top]
-    rest = sorted((q for q in active if q not in set(core)),
+    pins = [q for q in pinned if q in set(active)][:core_slots]
+    remaining = [q for q in active if q not in set(pins)]
+    open_slots = max(0, core_slots - len(pins))
+    ranked = sorted(remaining, key=lambda q: -value(q))
+    n_top = min(open_slots, max(1, int(open_slots * cfg.get("exploit_share", 0.7)))) if open_slots else 0
+    core = pins + ranked[:n_top]
+    rest = sorted((q for q in remaining if q not in set(core)),
                   key=lambda q: qs.get(q, {}).get("last_rc", -10**9))
-    core += rest[:core_slots - n_top]
+    core += rest[:max(0, open_slots - n_top)]
 
     est = (len(core) + len(explore)) * len(sorts) * pages + cfg["max_detail_calls"]
     print(f"[budget] ~{per_run:.0f} calls/run available ({cfg['daily_call_budget']}/day "
           f"÷ ~{rpd} runs) -> {slots} query slots · sorts: {'+'.join(sorts)} · "
-          f"{len(core)} core + {len(explore)} explore · est {est} calls this run")
+          f"{len(core)} core ({len(pins)} pinned) + {len(explore)} explore · "
+          f"{len(disabled)} disabled · est {est} calls this run")
     return core, explore, sorts
 
 
@@ -541,13 +576,41 @@ def update_query_stats(cfg, stats, ran, rows):
         st["runs"] += 1
         st["last_rc"] = rc
         st["last_t"] = datetime.now(timezone.utc).isoformat()
+    # Break each hit down by kind so the dashboard can show what a search actually
+    # brings back, not just how much. A search returning 20 traps is not the same
+    # as one returning 20 strong deals, and the bar chart should say so at a glance.
+    strong_at = cfg.get("strong_score", 70)
     for r in rows:
         st = qs.get(r.get("query") or "")
-        if st:
-            st["traps" if r["trap"] else "deals"] += 1
+        if not st:
+            continue
+        if r["trap"]:
+            st["traps"] = st.get("traps", 0) + 1
+        else:
+            st["deals"] = st.get("deals", 0) + 1
+            key = "strong" if (r.get("score") or 0) >= strong_at else "weak"
+            st[key] = st.get(key, 0) + 1
+        if r.get("auth_guaranteed"):
+            st["ag"] = st.get("ag", 0) + 1
+        if r.get("mixed_lot"):
+            st["mixed"] = st.get("mixed", 0) + 1
 
+    pinned = set(cfg.get("pinned_queries") or ())
+    disabled = set(cfg.get("disabled_queries") or ())
     promoted, retired = [], []
     for q, st in qs.items():
+        # your explicit calls override the engine's automatic judgement in both directions
+        if q in pinned:
+            st["pinned"] = True
+            if st.get("status") == "retired":
+                st["status"] = None       # un-retire: you asked for this one back
+            continue
+        st.pop("pinned", None)
+        if q in disabled:
+            st["status"] = "disabled"
+            continue
+        if st.get("status") == "disabled":
+            st["status"] = None           # re-enabled from the dashboard
         if (st.get("origin") == "explore" and st.get("status") != "promoted"
                 and st.get("deals", 0) >= cfg["promote_min_deals"]):
             st["status"] = "promoted"
@@ -590,25 +653,14 @@ def auth_guaranteed(item):
 def search(token, query, limit, sort="price", cfg=None):
     out, offset = [], 0
     headers = {"Authorization": f"Bearer {token}", "X-EBAY-C-MARKETPLACE-ID": "EBAY_US"}
+    # Deliberately unrestricted beyond format/condition/location. Authenticity Guarantee
+    # and mixed-karat lots are NOT filtered here: narrowing the eBay query throws away
+    # listings we can never get back, and the AG filter in particular also requires
+    # deliveryCountry + deliveryPostalCode or eBay silently returns nothing at all.
+    # Both are tagged per row instead and shown/hidden in the dashboard, the same way
+    # traps are — collect wide, filter at the glass.
     base_filter = ("buyingOptions:{FIXED_PRICE},conditions:{USED|UNSPECIFIED},"
                    "itemLocationCountry:US")
-    # single source of truth: this is the only place the AG restriction is added to the
-    # actual eBay query. evaluate_core() re-checks per item as a defensive backstop —
-    # toggle cfg["auth_guarantee_only"] (settings.json / dashboard) to change both at once.
-    #
-    # CRITICAL eBay quirk: qualifiedPrograms only returns items when deliveryCountry AND
-    # deliveryPostalCode are also present. Without them eBay answers HTTP 200 with an
-    # empty itemSummaries — a silent zero, not an error. Never send one without the
-    # other two. (Documented under qualifiedPrograms in Buy API Field Filters.)
-    if (cfg or {}).get("auth_guarantee_only", True):
-        zipc = str((cfg or {}).get("delivery_postal_code") or "").strip()
-        if not zipc:
-            print("  ! auth_guarantee_only is on but delivery_postal_code is empty — "
-                  "eBay returns nothing for qualifiedPrograms without it. Skipping AG "
-                  "filter this run; set delivery_postal_code in settings.json.")
-        else:
-            base_filter += (",qualifiedPrograms:{AUTHENTICITY_GUARANTEE}"
-                            f",deliveryCountry:US,deliveryPostalCode:{zipc}")
     while offset < limit:
         page = min(50, limit - offset)
         r = requests.get("https://api.ebay.com/buy/browse/v1/item_summary/search",
@@ -655,12 +707,7 @@ def evaluate_core(item, karat, grams, spot24, cfg, title_text=None, photos=None,
                   gold_specific=False, mixed_karats=None):
     if not seller_ok(item, cfg):
         return None
-    ag = auth_guaranteed(item)
-    # backstop, not the primary filter: search() already asks eBay for AG-only results
-    # when this setting is on, but a listing could theoretically slip through (API quirk,
-    # cached result, etc.), so re-check here before it ever becomes a deal row.
-    if cfg.get("auth_guarantee_only", True) and not ag:
-        return None
+    ag = auth_guaranteed(item)   # tagged for display/filtering, never an exclusion
     price = float((item.get("price") or {}).get("value", 0) or 0)
     if price <= 0 or grams <= 0:
         return None
@@ -706,8 +753,9 @@ def evaluate_core(item, karat, grams, spot24, cfg, title_text=None, photos=None,
     # mixed-grade items: excluded by default (currently steering clear of lots /
     # multi-karat pieces) — flip exclude_mixed in settings.json / the dashboard to
     # revert to the old behavior of pricing at the lowest-karat floor with a flag.
-    if mixed and cfg.get("exclude_mixed", True):
-        return None
+    # Mixed-karat lots are kept and priced at the lowest karat present (a conservative
+    # floor), then flagged so the dashboard can show or hide them. They used to be
+    # dropped outright, which silently discarded genuinely good scrap lots.
     mixed_note = ""
     if mixed:
         ks = "+".join(f"{k}k" for k in sorted(mixed_karats))
@@ -1097,6 +1145,16 @@ def main():
         "traps": traps[:80],
         "traps_count": len(traps),
         "zero_streak": zero_streak,
+        # compact per-query tally embedded here as well as query_stats.json: results.json
+        # is always redeployed, whereas query_stats.json rides the Actions cache and
+        # silently resets to empty if that cache is ever evicted.
+        "query_perf": {q: {"runs": s.get("runs", 0), "deals": s.get("deals", 0),
+                           "traps": s.get("traps", 0), "strong": s.get("strong", 0),
+                           "weak": s.get("weak", 0), "ag": s.get("ag", 0),
+                           "mixed": s.get("mixed", 0), "origin": s.get("origin", "core"),
+                           "status": s.get("status"), "pinned": bool(s.get("pinned"))}
+                       for q, s in sorted(qstats.get("queries", {}).items(),
+                                          key=lambda kv: -kv[1].get("deals", 0))[:120]},
         "total_profit": round(sum(d["profit"] for d in deals if d["profit"] > 0), 2),
         "settings_used": {
             "payout_pct": CONFIG["payout_pct"], "trap_under_pct": CONFIG["trap_under_pct"],

@@ -86,8 +86,6 @@
     "18k gold scrap grams",
     "14k gold chain grams"
   ],
-  "auth_guarantee_only": true,
-  "delivery_postal_code": "33101",
   "daily_call_budget": 4500,
   "runs_per_day": 0,
   "sort_mode": "both",
@@ -102,5 +100,8 @@
   "fb_half_life_days": 45,
   "fb_seller_block_bad": 2,
   "history_max": 10000,
-  "zero_alert_every": 6
+  "zero_alert_every": 6,
+  "pinned_queries": [],
+  "disabled_queries": [],
+  "strong_score": 70
 }
