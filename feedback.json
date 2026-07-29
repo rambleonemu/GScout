@@ -133,5 +133,14 @@
   "verdict": "bad",
   "category": "stones",
   "ts": 1785345966964
+ },
+ {
+  "id": "v1|377289694009|0",
+  "query": "gold herringbone chain grams",
+  "seller": "atdahousecollector719",
+  "karat": "14K",
+  "verdict": "good",
+  "category": null,
+  "ts": 1785345977977
  }
 ]
