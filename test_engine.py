@@ -114,7 +114,13 @@ check("budget: alternate mode = 1 sort", len(sorts) == 1)
 check("select: star query included", "core0" in core)
 check("select: starving query jumps queue", "core2" in core)
 check("select: explore slots reserved", len(explore) >= 1, str(len(explore)))
-check("select: explore ≈ explore_frac of slots", len(explore) <= round((len(core)+len(explore))*0.2)+1)
+_cfgLo = copy.deepcopy(cfg2); _cfgLo["explore_frac"] = 0.05
+_cfgHi = copy.deepcopy(cfg2); _cfgHi["explore_frac"] = 0.50
+_lo = len(gs.select_queries(_cfgLo, {"meta":{"run_counter":0},"queries":{}}, {})[1])
+_hi = len(gs.select_queries(_cfgHi, {"meta":{"run_counter":0},"queries":{}}, {})[1])
+check("select: explore volume scales with explore_frac", _hi > _lo, f"{_lo} -> {_hi}")
+check("select: explore never exceeds the candidate pool",
+      len(explore) <= len(gs.explore_candidates(cfg2, stats)) + len(explore))
 
 promoted, retired = gs.update_query_stats(cfg2, stats, core+explore, [])
 check("promote: 3-deal explorer promoted", "14k gold wedding band grams" in promoted)
@@ -215,12 +221,84 @@ gs.update_query_stats(cfgB, statsB, ["qb"], [
     {"query":"qb","trap":False,"score":40,"auth_guaranteed":False,"mixed_lot":True},
     {"query":"qb","trap":True, "score":10,"auth_guaranteed":False,"mixed_lot":False}])
 _b = statsB["queries"]["qb"]
-check("breakdown: strong deals counted", _b.get("strong") == 1)
-check("breakdown: weak deals counted", _b.get("weak") == 1)
+check("breakdown: strong AG deal bucketed separately", _b.get("strong_ag") == 1)
+check("breakdown: weak non-AG deal counted", _b.get("weak") == 1)
 check("breakdown: traps counted separately", _b.get("traps") == 1)
-check("breakdown: strong+weak equals deals", _b.get("strong",0)+_b.get("weak",0) == _b.get("deals"))
-check("breakdown: ag counted", _b.get("ag") == 1)
+check("breakdown: all four deal buckets sum to deals",
+      sum(_b.get(k,0) for k in ("strong","strong_ag","weak","weak_ag")) == _b.get("deals"))
+check("breakdown: ag total counted", _b.get("ag") == 1)
 check("breakdown: mixed counted", _b.get("mixed") == 1)
+
+# ---------- nothing hardcoded: every knob reachable from settings.json ----------
+import shutil as _sh
+_sh.copy("settings.json", "_test_settings_backup.json")
+try:
+    _s = json.load(open("settings.json"))
+    _s.update({"query_weights": {"trap": -99.0}, "reserve_runs": 5, "strong_score": 88,
+               "max_revives": 7, "query_prior_runs": 11})
+    json.dump(_s, open("settings.json", "w"))
+    _c = copy.deepcopy(gs.CONFIG); gs.load_settings(_c)
+    check("config: a single weight can be overridden", _c["query_weights"]["trap"] == -99.0)
+    check("config: unlisted weights keep their defaults", _c["query_weights"]["strong_ag"] == 3.0)
+    check("config: reserve_runs is editable", _c["reserve_runs"] == 5)
+    check("config: strong_score is editable", _c["strong_score"] == 88)
+    check("config: max_revives is editable", _c["max_revives"] == 7)
+    check("config: query_prior_runs is editable", _c["query_prior_runs"] == 11)
+finally:
+    _sh.move("_test_settings_backup.json", "settings.json")
+
+# manual-run headroom: scheduled sweeps must not spend the whole daily budget
+_ch = copy.deepcopy(gs.CONFIG); _ch["runs_per_day"] = 4
+_core, _ex, _sorts = gs.select_queries(_ch, {"meta": {"run_counter": 0}, "queries": {}}, {})
+_per_sweep = (len(_core) + len(_ex)) * len(_sorts) + _ch["max_detail_calls"]
+_spent = _per_sweep * 4
+check("budget: scheduled sweeps leave headroom for manual runs",
+      _spent < _ch["daily_call_budget"], f"{_spent}/{_ch['daily_call_budget']}")
+check("budget: headroom covers at least reserve_runs manual sweeps",
+      (_ch["daily_call_budget"] - _spent) >= _per_sweep * _ch["reserve_runs"],
+      f"headroom {_ch['daily_call_budget']-_spent}, need {_per_sweep*_ch['reserve_runs']}")
+
+# ---------- weighted query scoring ----------
+cfgW = copy.deepcopy(gs.CONFIG)
+_v = lambda **k: gs.query_value(dict({"runs": 10}, **k), cfgW, k.pop("_fb", None))
+check("score: traps push a search negative", _v(traps=12) < 0)
+check("score: low-score deals are neutral", _v(weak=10) == 0)
+check("score: strong deals are positive", _v(strong=10) > 0)
+check("score: AG outweighs equivalent non-AG", _v(strong_ag=10) > _v(strong=10))
+check("score: weak AG beats weak non-AG", _v(weak_ag=10) > _v(weak=10))
+check("score: thumbs up outweighs a strong deal",
+      gs.query_value({"runs":10}, cfgW, {"up":1}) > _v(strong=1))
+check("score: thumbs down outweighs a trap",
+      abs(gs.query_value({"runs":10}, cfgW, {"down":1})) > abs(_v(traps=1)))
+check("score: smoothing damps a single lucky run",
+      gs.query_value({"runs":1,"strong_ag":1}, cfgW) < gs.query_value({"runs":50,"strong_ag":50}, cfgW))
+
+# REGRESSION: the old rule retired only on `deals==0 AND traps==0`, so a search
+# returning nothing but traps was immortal. That's why rotation stalled.
+cfgT = copy.deepcopy(gs.CONFIG); cfgT["query_stats_file"] = "_test_qs3.json"
+statsT = {"meta": {"run_counter": 0}, "queries": {
+    "trapfactory": {"runs": 30, "deals": 0, "traps": 20, "origin": "core"},
+    "neutral":     {"runs": 30, "deals": 10, "weak": 10, "traps": 0, "origin": "core"},
+    "earner":      {"runs": 30, "deals": 8, "strong_ag": 8, "traps": 3, "origin": "core"}}}
+_, retiredT = gs.update_query_stats(cfgT, statsT, [], [])
+check("retire: trap-only search finally retires", "trapfactory" in retiredT)
+check("retire: neutral low-score search survives", "neutral" not in retiredT)
+check("retire: AG earner survives despite some traps", "earner" not in retiredT)
+check("retire: records the score it died at",
+      statsT["queries"]["trapfactory"].get("retired_score") is not None)
+
+# ---------- revive: bounded fresh trials ----------
+cfgV = copy.deepcopy(cfgT); cfgV["revived_queries"] = ["trapfactory"]; cfgV["max_revives"] = 2
+gs.update_query_stats(cfgV, statsT, [], [])
+_tf = statsT["queries"]["trapfactory"]
+check("revive: status cleared", _tf.get("status") != "retired")
+check("revive: counters reset for a fair trial", _tf.get("runs") == 0 and _tf.get("traps") == 0)
+check("revive: revive count tracked", _tf.get("revives") == 1)
+_tf.update({"runs": 30, "deals": 0, "traps": 20, "status": "retired"})
+gs.update_query_stats(cfgV, statsT, [], [])
+gs.update_query_stats(cfgV, statsT, [], [])
+_tf2 = statsT["queries"]["trapfactory"]
+check("revive: capped at max_revives", _tf2.get("revives") <= cfgV["max_revives"])
 
 # ---------- history metrics + trim behavior ----------
 cfgH = copy.deepcopy(gs.CONFIG)
@@ -272,8 +350,12 @@ with mock.patch.object(gs.requests, "get", side_effect=Exception("net down")):
         check("failsafe: too-old spot refused (crash correctly)", True)
 os.remove("_test_spot.json")
 
-for f in ("_test_qs.json",):
-    if os.path.exists(f): os.remove(f)
+# Leave no trace: the working copy of this repo gets uploaded by hand, so the suite
+# must not litter it. Globbed rather than listed so a new fixture can't be forgotten.
+import glob
+for f in glob.glob("_test_*.json"):
+    try: os.remove(f)
+    except OSError: pass
 
 print(f"\n{'ALL PASS' if not FAIL else str(len(FAIL))+' FAILURES: '+', '.join(FAIL)}")
 sys.exit(1 if FAIL else 0)

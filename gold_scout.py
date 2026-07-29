@@ -62,12 +62,14 @@ CONFIG = {
     "history_max":  2000,     # keep roughly the last few weeks of runs
 
     # ---- quota budgeting (all overridable from settings.json / dashboard) ----
-    "daily_call_budget": 4500,  # stay under eBay's 5,000/day with headroom for retries
+    "daily_call_budget": 4500,
+    "reserve_runs": 2,          # budget as if this many extra sweeps happen each day, so
+                                # hitting "run now" a couple of times can't overrun quota.
+                                # Scheduled runs simply size themselves a little smaller.  # stay under eBay's 5,000/day with headroom for retries
     "runs_per_day": 0,          # 0 = auto-estimate from history timestamps (fallback 48)
     "sort_mode": "alternate",   # "alternate" (halves calls) | "both" | "price" | "newlyListed"
 
     # ---- content filters ----
-    "exclude_mixed": True,      # drop multi-karat items entirely (lots, pendant-on-chain combos)
     # NOTE: Authenticity Guarantee and mixed-karat lots are display filters, not search
     # or scoring filters — see search() and evaluate_core(). The dashboard decides what
     # to show; the engine always collects and scores both.
@@ -95,24 +97,71 @@ CONFIG = {
     # are never run, never explored, and never resurrected by promotion.
     "pinned_queries": [],
     "disabled_queries": [],
+    "revived_queries": [],
 
     # ---- dynamic query engine ----
     "query_stats_file": "query_stats.json",
     "explore_enabled": True,
-    "explore_frac": 0.12,       # share of each run's query slots spent trying new searches
+    "explore_frac": 0.35,       # share of each run's query slots spent trying new searches.
+                                # High on purpose: at a few sweeps a day there are far more
+                                # slots than core queries, and unspent slots are wasted quota.
+                                # The point is to hunt for terms, not re-run known ones.
     "explore_pool": [],         # your own candidate searches to try first (from dashboard)
     "promote_min_deals": 3,     # explore query with this many total deals -> promoted to core
-    "retire_min_runs": 25,      # a query this many runs old with 0 deals AND 0 traps -> retired
+    "retire_min_runs": 8,       # runs before a search can be judged. Lower than it was:
+                                # at 4 sweeps a day, 25 runs is over a week of dead weight.
     "starvation_cap": 6,        # rotation cadence hint (informational)
     "exploit_share": 0.7,       # share of core slots locked to proven top performers
+
+    # How a search earns its slot. Points per hit, summed then divided by runs, so a
+    # search is judged on what it brings back per sweep rather than on raw volume.
+    # Traps are a cost, not a success — the old rule treated any hit as proof of life,
+    # which is why nothing ever rotated out. Authenticity Guarantee counts double
+    # because those are the ones that actually close.
+    "query_weights": {
+        "thumbs_up":    3.0,    # you said this search found something good
+        "strong_ag":    3.0,    # strong deal, authenticity guaranteed
+        "strong":       1.5,    # strong deal
+        "weak_ag":      1.5,    # low score, but authenticity guaranteed
+        "weak":         0.0,    # low-score deal — neutral, neither earns nor costs
+        "trap":        -1.0,    # cost: burned a call and your attention
+        "thumbs_down": -3.0,    # you said this search found junk
+    },
+    "query_prior_runs": 3,      # smoothing: a new search isn't judged on one sweep
+    "retire_score_at": 0.0,     # below this (after retire_min_runs) a search is retired
+    "max_revives": 2,           # fresh trials a retired search can be granted from the UI
     "strong_score": 70,         # at or above this, a deal counts as "strong" in the
                                 # per-search breakdown (matches the default alert floor)
     "spot_stale_max_hours": 24, # how old a cached spot price may be during API outages
     # term lists the auto-explorer combines when your own pool runs dry
-    "explore_karats": ["10k", "14k", "18k"],
-    "explore_items": ["wedding band", "hoop earrings", "figaro chain", "box chain",
-                      "curb chain", "medal", "religious medal", "id bracelet",
-                      "pinky ring", "nugget ring", "grillz"],
+    "explore_karats": ["10k", "14k", "18k", "22k", "24k", "gold"],
+    # Deliberately long and deliberately misspelled. Misspellings are the edge: fewer
+    # bidders find them, so they close under melt. Every entry here is a candidate the
+    # explorer can trial, score, and either promote or retire on its own.
+    "explore_items": [
+        # chains
+        "rope chain", "figaro chain", "box chain", "curb chain", "cuban chain",
+        "franco chain", "herringbone chain", "mariner chain", "wheat chain",
+        "singapore chain", "byzantine chain", "snake chain", "bead chain",
+        # bracelets
+        "id bracelet", "tennis bracelet", "charm bracelet", "bangle bracelet",
+        "cuban bracelet", "rope bracelet", "link bracelet",
+        # rings
+        "wedding band", "pinky ring", "nugget ring", "signet ring", "class ring",
+        "band ring", "dome ring", "cigar band",
+        # earrings
+        "hoop earrings", "huggie earrings", "stud earrings", "drop earrings",
+        # pendants / misc
+        "medal", "religious medal", "crucifix pendant", "cross pendant",
+        "charm", "locket", "cuff links", "money clip", "grillz", "chai pendant",
+        "horseshoe pendant", "nugget pendant",
+        # scrap / lots
+        "scrap lot", "dental gold", "broken jewelry lot", "estate lot",
+        # common misspellings — the actual edge
+        "braclet", "bracelett", "neckalce", "necklance", "earings", "earrigs",
+        "chian", "chainn", "jewlery", "jewelery", "pendent", "pendnat",
+        "solid glod", "yello gold", "karat gold", "carat gold",
+    ],
 }
 
 EMAIL = {
@@ -332,7 +381,9 @@ def load_settings(cfg):
             s = json.load(f)
     except Exception:
         return
-    for k in ("payout_pct", "trap_under_pct", "max_detail_calls",
+    for k in ("query_prior_runs", "retire_score_at", "max_revives", "reserve_runs",
+              "strong_score",
+              "payout_pct", "trap_under_pct", "max_detail_calls",
               "min_feedback_pct", "min_feedback_score", "results_per_query",
               "daily_call_budget", "runs_per_day", "fb_half_life_days",
               "fb_weight_span", "fb_seller_block_bad", "explore_frac",
@@ -340,10 +391,15 @@ def load_settings(cfg):
               "history_max", "spot_stale_max_hours"):
         if isinstance(s.get(k), (int, float)):
             cfg[k] = s[k]
-    for k in ("exclude_mixed", "explore_enabled"):
+    # per-key merge so you can override one weight without restating the whole table
+    if isinstance(s.get("query_weights"), dict):
+        for k, v in s["query_weights"].items():
+            if isinstance(v, (int, float)):
+                cfg["query_weights"][k] = float(v)
+    for k in ("explore_enabled",):
         if isinstance(s.get(k), bool):
             cfg[k] = s[k]
-    for k in ("pinned_queries", "disabled_queries"):
+    for k in ("pinned_queries", "disabled_queries", "revived_queries"):
         if isinstance(s.get(k), list):
             cfg[k] = [str(q).strip() for q in s[k] if str(q).strip()]
     if s.get("sort_mode") in ("alternate", "both", "price", "newlyListed"):
@@ -499,6 +555,51 @@ def explore_candidates(cfg, stats):
             and known.get(q, {}).get("status") not in ("retired", "promoted")]
 
 
+def feedback_counts(cfg):
+    """Raw 👍/👎 totals per search term, undecayed.
+
+    Separate from load_feedback()'s decayed multipliers on purpose: those nudge how a
+    listing is *alerted*, these decide whether a search keeps its slot. A thumb is a
+    direct instruction about the search that surfaced the listing, so it is counted
+    at full weight and never faded."""
+    counts = {}
+    try:
+        with open(cfg.get("feedback_file", "feedback.json")) as f:
+            events = json.load(f).get("events", [])
+    except Exception:
+        return counts
+    for e in events:
+        if not isinstance(e, dict):
+            continue
+        q = (e.get("query") or "").strip()
+        if not q:
+            continue
+        c = counts.setdefault(q, {"up": 0, "down": 0})
+        c["up" if e.get("verdict") == "good" else "down"] += 1
+    return counts
+
+
+def query_value(st, cfg, fb=None):
+    """Points-per-run for one search. Single definition of 'is this search earning
+    its slot', used for both ranking and retirement so the two can never disagree."""
+    w = cfg.get("query_weights", {})
+    fb = fb or {}
+    pts = (w.get("strong_ag", 3.0)   * st.get("strong_ag", 0)
+         + w.get("strong", 1.5)      * st.get("strong", 0)
+         + w.get("weak_ag", 1.5)     * st.get("weak_ag", 0)
+         + w.get("weak", 0.0)        * st.get("weak", 0)
+         + w.get("trap", -1.0)       * st.get("traps", 0)
+         + w.get("thumbs_up", 3.0)   * fb.get("up", 0)
+         + w.get("thumbs_down", -3.0)* fb.get("down", 0))
+    return pts / (st.get("runs", 0) + max(1, cfg.get("query_prior_runs", 3)))
+
+
+def real_deals(st):
+    """Deals that weren't traps — the old retirement rule counted traps as signs of
+    life, so a search returning nothing but traps was immortal."""
+    return sum(st.get(k, 0) for k in ("strong", "strong_ag", "weak", "weak_ag")) or st.get("deals", 0)
+
+
 def select_queries(cfg, stats, query_mult):
     """Pick which searches this run gets, inside the real quota budget.
 
@@ -511,7 +612,11 @@ def select_queries(cfg, stats, query_mult):
     rc = stats["meta"]["run_counter"]
     sorts = sorts_for_run(cfg, rc)
     rpd = estimate_runs_per_day(cfg)
-    per_run = cfg["daily_call_budget"] / rpd
+    # Leave room for unscheduled manual sweeps: divide the day's budget by the runs we
+    # expect PLUS a reserve, so ad-hoc "run now" clicks come out of slack rather than
+    # out of tomorrow's quota. Derived from the detected cadence, never a fixed number.
+    reserve = max(0, int(cfg.get("reserve_runs", 2)))
+    per_run = cfg["daily_call_budget"] / (rpd + reserve)
     pages = max(1, -(-cfg["results_per_query"] // 50))          # ceil, calls per query per sort
     slots = int((per_run - cfg["max_detail_calls"] - 3) / (len(sorts) * pages))
     slots = max(4, slots)
@@ -529,9 +634,12 @@ def select_queries(cfg, stats, query_mult):
               and (q in pinned or qs.get(q, {}).get("status") != "retired")]
     active = list(dict.fromkeys(active))          # de-dupe, keep order
 
+    fbc = feedback_counts(cfg)
     def value(q):
-        st = qs.get(q, {})
-        return ((st.get("deals", 0) + 1) / (st.get("runs", 0) + 2)) * query_mult.get(q, 1.0)
+        # query_mult is intentionally unused here: 👍/👎 are now explicit, full-weight
+        # terms inside query_value() rather than a decayed multiplier, so applying both
+        # would count your feedback twice. load_feedback() still drives alerting.
+        return query_value(qs.get(q, {}), cfg, fbc.get(q))
 
     explore = []
     if cfg["explore_enabled"]:
@@ -547,19 +655,28 @@ def select_queries(cfg, stats, query_mult):
     # Pinned queries are seated first and never compete for the remaining slots.
     core_slots = max(0, slots - len(explore))
     pins = [q for q in pinned if q in set(active)][:core_slots]
-    remaining = [q for q in active if q not in set(pins)]
-    open_slots = max(0, core_slots - len(pins))
+    # Starvation guarantee: anything that hasn't run in starvation_cap sweeps is
+    # seated right after the pins, ahead of ranking. Without this, a low-scoring
+    # search can be permanently crowded out and never gather the runs it needs to
+    # either earn its place or be retired on evidence — it just sits unjudged.
+    cap = max(1, int(cfg.get("starvation_cap", 6)))
+    starved = [q for q in active
+               if q not in set(pins)
+               and (rc - qs.get(q, {}).get("last_rc", -10**9)) > cap][:max(0, core_slots - len(pins))]
+    seated = set(pins) | set(starved)
+    remaining = [q for q in active if q not in seated]
+    open_slots = max(0, core_slots - len(pins) - len(starved))
     ranked = sorted(remaining, key=lambda q: -value(q))
     n_top = min(open_slots, max(1, int(open_slots * cfg.get("exploit_share", 0.7)))) if open_slots else 0
-    core = pins + ranked[:n_top]
+    core = pins + starved + ranked[:n_top]
     rest = sorted((q for q in remaining if q not in set(core)),
                   key=lambda q: qs.get(q, {}).get("last_rc", -10**9))
     core += rest[:max(0, open_slots - n_top)]
 
     est = (len(core) + len(explore)) * len(sorts) * pages + cfg["max_detail_calls"]
     print(f"[budget] ~{per_run:.0f} calls/run available ({cfg['daily_call_budget']}/day "
-          f"÷ ~{rpd} runs) -> {slots} query slots · sorts: {'+'.join(sorts)} · "
-          f"{len(core)} core ({len(pins)} pinned) + {len(explore)} explore · "
+          f"÷ ~{rpd}+{reserve} runs) -> {slots} query slots · sorts: {'+'.join(sorts)} · "
+          f"{len(core)} core ({len(pins)} pinned, {len(starved)} starved) + {len(explore)} explore · "
           f"{len(disabled)} disabled · est {est} calls this run")
     return core, explore, sorts
 
@@ -584,19 +701,22 @@ def update_query_stats(cfg, stats, ran, rows):
         st = qs.get(r.get("query") or "")
         if not st:
             continue
+        ag = bool(r.get("auth_guaranteed"))
         if r["trap"]:
             st["traps"] = st.get("traps", 0) + 1
         else:
             st["deals"] = st.get("deals", 0) + 1
-            key = "strong" if (r.get("score") or 0) >= strong_at else "weak"
+            key = ("strong" if (r.get("score") or 0) >= strong_at else "weak") + ("_ag" if ag else "")
             st[key] = st.get(key, 0) + 1
-        if r.get("auth_guaranteed"):
+        if ag:
             st["ag"] = st.get("ag", 0) + 1
         if r.get("mixed_lot"):
             st["mixed"] = st.get("mixed", 0) + 1
 
     pinned = set(cfg.get("pinned_queries") or ())
     disabled = set(cfg.get("disabled_queries") or ())
+    revive = set(cfg.get("revived_queries") or ())
+    fbc = feedback_counts(cfg)
     promoted, retired = [], []
     for q, st in qs.items():
         # your explicit calls override the engine's automatic judgement in both directions
@@ -605,6 +725,19 @@ def update_query_stats(cfg, stats, ran, rows):
             if st.get("status") == "retired":
                 st["status"] = None       # un-retire: you asked for this one back
             continue
+        # "Bring back" from the dashboard: wipe the record and let it compete again
+        # from scratch. Capped, because a search that keeps failing shouldn't be able
+        # to consume a slot forever on repeat second chances.
+        if q in revive and st.get("status") == "retired":
+            if st.get("revives", 0) < cfg.get("max_revives", 2):
+                st.update({"status": None, "runs": 0, "deals": 0, "traps": 0,
+                           "strong": 0, "strong_ag": 0, "weak": 0, "weak_ag": 0,
+                           "ag": 0, "mixed": 0})
+                st["revives"] = st.get("revives", 0) + 1
+                st.pop("retired_score", None)
+                print(f"[explore] REVIVED {q!r} — fresh trial "
+                      f"({st['revives']}/{cfg.get('max_revives', 2)})")
+                continue
         st.pop("pinned", None)
         if q in disabled:
             st["status"] = "disabled"
@@ -612,17 +745,25 @@ def update_query_stats(cfg, stats, ran, rows):
         if st.get("status") == "disabled":
             st["status"] = None           # re-enabled from the dashboard
         if (st.get("origin") == "explore" and st.get("status") != "promoted"
-                and st.get("deals", 0) >= cfg["promote_min_deals"]):
+                and real_deals(st) >= cfg["promote_min_deals"]):
             st["status"] = "promoted"
             promoted.append(q)
-        if (st.get("status") not in ("retired",) and st.get("runs", 0) >= cfg["retire_min_runs"]
-                and st.get("deals", 0) == 0 and st.get("traps", 0) == 0):
-            st["status"] = "retired"
-            retired.append(q)
+        # Retire on evidence of not earning its slot: either it never found a real
+        # deal, or its weighted score went negative (traps and 👎 outweighing hits).
+        # The old rule required zero traps too, so trap factories ran forever.
+        if st.get("status") != "retired" and st.get("runs", 0) >= cfg["retire_min_runs"]:
+            score = query_value(st, cfg, fbc.get(q))
+            if real_deals(st) == 0 or score < cfg.get("retire_score_at", 0.0):
+                st["status"] = "retired"
+                st["retired_score"] = round(score, 3)
+                retired.append(q)
     for q in promoted:
         print(f"[explore] PROMOTED to core: {q!r} — add it to your query list to lock it in")
     for q in retired:
-        print(f"[stats] retired (0 hits in {qs[q]['runs']} runs): {q!r}")
+        st = qs[q]
+        why = ("no real deals" if real_deals(st) == 0
+               else f"score {st.get('retired_score')}")
+        print(f"[stats] retired ({why} over {st['runs']} runs): {q!r}")
     return promoted, retired
 
 
@@ -751,8 +892,6 @@ def evaluate_core(item, karat, grams, spot24, cfg, title_text=None, photos=None,
     s_pct = float(seller["feedbackPercentage"]) if seller.get("feedbackPercentage") else None
 
     # mixed-grade items: excluded by default (currently steering clear of lots /
-    # multi-karat pieces) — flip exclude_mixed in settings.json / the dashboard to
-    # revert to the old behavior of pricing at the lowest-karat floor with a flag.
     # Mixed-karat lots are kept and priced at the lowest karat present (a conservative
     # floor), then flagged so the dashboard can show or hide them. They used to be
     # dropped outright, which silently discarded genuinely good scrap lots.
@@ -1065,6 +1204,7 @@ def main():
 
     # budget-aware selection: rank core queries, reserve exploration slots
     qstats = load_query_stats(CONFIG)
+    _FBC = feedback_counts(CONFIG)          # raw 👍/👎 per search, for the payload's score
     core_q, explore_q, sorts = select_queries(CONFIG, qstats, qmult)
     ran = core_q + explore_q
     rows = collect(token, ran, spot24, CONFIG, sort=sorts, deep=True)
@@ -1148,13 +1288,26 @@ def main():
         # compact per-query tally embedded here as well as query_stats.json: results.json
         # is always redeployed, whereas query_stats.json rides the Actions cache and
         # silently resets to empty if that cache is ever evicted.
+        # Effective settings echoed back so the dashboard never has to hardcode a
+        # mirror of an engine default. If a knob changes here, the UI follows on the
+        # next sweep with nothing to keep in sync by hand.
+        "config_echo": {k: CONFIG.get(k) for k in (
+            "strong_score", "max_revives", "retire_min_runs", "retire_score_at",
+            "alert_min_score", "query_weights", "query_prior_runs", "reserve_runs",
+            "payout_pct", "trap_under_pct", "explore_frac", "daily_call_budget",
+            "promote_min_deals", "fb_weight_span", "history_max", "runs_per_day",
+            "starvation_cap", "exploit_share", "min_feedback_pct")},
         "query_perf": {q: {"runs": s.get("runs", 0), "deals": s.get("deals", 0),
                            "traps": s.get("traps", 0), "strong": s.get("strong", 0),
-                           "weak": s.get("weak", 0), "ag": s.get("ag", 0),
+                           "strong_ag": s.get("strong_ag", 0), "weak": s.get("weak", 0),
+                           "weak_ag": s.get("weak_ag", 0), "ag": s.get("ag", 0),
                            "mixed": s.get("mixed", 0), "origin": s.get("origin", "core"),
-                           "status": s.get("status"), "pinned": bool(s.get("pinned"))}
+                           "status": s.get("status"), "pinned": bool(s.get("pinned")),
+                           "revives": s.get("revives", 0),
+                           "score": round(query_value(s, CONFIG, _FBC.get(q)), 3)}
                        for q, s in sorted(qstats.get("queries", {}).items(),
-                                          key=lambda kv: -kv[1].get("deals", 0))[:120]},
+                                          key=lambda kv: -query_value(kv[1], CONFIG,
+                                                                      _FBC.get(kv[0])))[:200]},
         "total_profit": round(sum(d["profit"] for d in deals if d["profit"] > 0), 2),
         "settings_used": {
             "payout_pct": CONFIG["payout_pct"], "trap_under_pct": CONFIG["trap_under_pct"],

@@ -223,13 +223,61 @@
   .qkey span { display:flex; align-items:center; gap:4px; }
   .qkey i { width:11px; height:8px; border-radius:2px; display:inline-block; }
   .qkey i.s{background:#f5c518}.qkey i.w{background:#8a6d1f}.qkey i.t{background:#7f3040}
+
+  /* --- tab navigation: four rooms, not one endless corridor --- */
+  .tabs { display:flex; gap:2px; border-bottom:1px solid #241f10; margin:0 0 14px;
+          position:sticky; top:0; z-index:70; background:rgba(10,10,10,.96);
+          backdrop-filter:blur(8px); padding-top:4px; overflow-x:auto; }
+  .tab { flex:0 0 auto; background:none; border:none; border-bottom:2px solid transparent;
+         color:#6b6b6b; font-family:"Cormorant Garamond",Georgia,serif; font-size:13px;
+         text-transform:uppercase; letter-spacing:2.5px; padding:9px 15px; cursor:pointer;
+         transition:.15s; white-space:nowrap; }
+  .tab:hover { color:#a3a3a3; }
+  .tab.on { color:#f5c518; border-bottom-color:#f5c518; }
+  .tab .cnt { font-family:ui-monospace,monospace; font-size:9.5px; letter-spacing:0;
+              color:#525252; margin-left:5px; }
+  .tab.on .cnt { color:#8a7a3a; }
+  .tab:focus-visible { outline:2px solid #f5c518; outline-offset:-2px; }
+
+  /* gold price + live deals ride above every tab except settings */
+  .ticker { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:12px; }
+  .tk { flex:1 1 92px; background:rgba(20,17,5,.5); border:1px solid #241f10;
+        border-radius:9px; padding:7px 10px; }
+  .tk .k { font-family:"Cormorant Garamond",Georgia,serif; font-size:9.5px;
+           text-transform:uppercase; letter-spacing:2px; color:#6b6b6b; }
+  .tk .v { font-family:"Playfair Display",Georgia,serif; font-size:17px; color:#f5c518;
+           margin-top:1px; }
+  .tk .v.grn { color:#34d399; } .tk .v.sm { font-size:14px; }
+
+  /* retired-term revival list on Dead Listings */
+  .rt { display:flex; align-items:center; gap:8px; padding:6px 8px; border-radius:8px;
+        border:1px solid #241f10; background:rgba(20,17,5,.35); margin-bottom:4px; }
+  .rt .q { flex:1; font-family:ui-monospace,monospace; font-size:11px; color:#a3a3a3;
+           overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .rt .why { font-family:ui-monospace,monospace; font-size:9.5px; color:#6b6b6b; }
+  .rt.revived { border-color:#3f5a2a; }
+  .rt.spent { opacity:.5; }
 </style>
 </head>
 <body>
 <div class="wrap" id="app">Loading…</div>
 
 <script>
-const KARATS = ["10K","14K","18K","22K","24K"];
+// One place to ask "what is the engine actually using?". Order matters: what the
+// engine reported this run beats what's saved in settings, which beats a fallback.
+// Nothing in the UI should restate an engine default anywhere else.
+function CFG(key, fallback){
+  const echo=(DATA&&DATA.config_echo)||{};
+  if(echo[key]!=null) return echo[key];
+  if(SET&&SET[key]!=null) return SET[key];
+  return fallback;
+}
+// Karats come from whatever the engine actually priced this run, not a fixed list.
+function karats(){
+  const p=(DATA&&DATA.prices_per_gram)||{};
+  const ks=Object.keys(p);
+  return ks.length?ks.sort((a,b)=>parseInt(a)-parseInt(b)):[];
+}
 const fmt = n => isFinite(n) ? n.toLocaleString("en-US",{style:"currency",currency:"USD"}) : "—";
 const fmtK = n => isFinite(n) ? "$"+(n>=1000 ? (n/1000).toFixed(1)+"k" : n.toFixed(0)) : "—";
 
@@ -259,8 +307,8 @@ const ui = LS.get("gdd_ui",{})||{};
 const F = Object.assign({karat:"All",minScore:0,minProfit:0,showTraps:false,
   hideSeen:false,showHidden:false,settingsOpen:false,
   sortBy:"score",   // "score" | "profit" | "age" | "pricedrop"
-  showTrends:false, showPrices:false, showEnded:false, showQueries:false, fbOpen:null,
-  trapMode:"hide", agMode:"all", mixedMode:"all",
+  showTrends:true, showPrices:true, showEnded:true, showQueries:true, fbOpen:null,
+  trapMode:"hide", agMode:"all", mixedMode:"all", tab:"listings",
   chartRange:"all", priceUnit:"oz", dealsMode:"total", trendMetric:"under", queryMetric:"deals"}, ui.F||{});
 const saveUI = ()=>{ ui.F=Object.assign({},F,{fbOpen:null}); LS.set("gdd_ui",ui); };
 
@@ -284,7 +332,7 @@ const SAMPLE_HIST = Array.from({length:24},(_,i)=>({
 }));
 
 let DATA=null, HIST=[], SET=null, TRUSTED={}, QSTATS=null;
-let PINNED=[], DISABLED=[], QDIRTY=false;   // manual per-search overrides -> settings.json
+let PINNED=[], DISABLED=[], REVIVED=[], QDIRTY=false;   // manual per-search overrides -> settings.json
 // ---- feedback (👍/👎) : shown locally at once, committed to feedback.json so the engine learns ----
 let FB = LS.get("gdd_fb", {});               // id -> {verdict, category, ts, query, seller}
 let FB_PENDING = LS.get("gdd_fb_pending", []); // events not yet committed to the repo
@@ -408,8 +456,8 @@ function chartHover(el){
 }
 function barChart(counts){
   const W=300,H=90,PB=20,PT=8,g=8;
-  const n=KARATS.length,bw=(W-g*(n+1))/n,max=Math.max(1,...KARATS.map(k=>counts[k]||0));
-  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto">`+KARATS.map((k,i)=>{
+  const KS=karats(), n=KS.length||1, bw=(W-g*(n+1))/n, max=Math.max(1,...KS.map(k=>counts[k]||0));
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto">`+KS.map((k,i)=>{
     const v=counts[k]||0,barH=(v/max)*(H-PT-PB),x=g+i*(bw+g),y=H-PB-barH;
     return `<rect x="${x}" y="${Math.max(y,PT)}" width="${bw}" height="${Math.max(barH,1)}" rx="2" fill="#fbbf24" opacity="${v?0.85:0.15}"/>
       <text x="${x+bw/2}" y="${H-4}" fill="#525252" font-size="8" text-anchor="middle" font-family="monospace">${k}</text>
@@ -463,7 +511,7 @@ function queryPerfChart(rows, metric){
         <button class="iact xs ${disabled?"bad":""}" title="${disabled?"re-enable":"stop using this search"}" onclick="toggleQuery('off','${esc(q).replace(/'/g,"\\'")}')">✕</button>
       </div></div>`;
   }).join("")+`</div>
-  <div class="qkey"><span><i class="s"></i>strong (${SET&&SET.strong_score||70}+)</span><span><i class="w"></i>low score</span><span><i class="t"></i>traps</span><span>🛡 guaranteed</span><span>◆ mixed lot</span></div>`;
+  <div class="qkey"><span><i class="s"></i>strong (${CFG("strong_score",70)}+)</span><span><i class="w"></i>low score</span><span><i class="t"></i>traps</span><span>🛡 guaranteed</span><span>◆ mixed lot</span></div>`;
 }
 // Three-way visibility, identical model for every listing trait: show everything,
 // show only the ones with it, or hide them. Traps, Authenticity Guarantee and
@@ -476,6 +524,20 @@ function triState(key,label){
 function passTraits(x){
   const m=(mode,has)=> mode==="all" || (mode==="only"&&has) || (mode==="hide"&&!has);
   return m(F.trapMode,!!x.trap) && m(F.agMode,!!x.auth_guaranteed) && m(F.mixedMode,!!x.mixed_lot);
+}
+// Searches the engine dropped, newest-worst first. Reads the same query_perf the
+// Data tab charts, so there's one source of truth for how a term is doing.
+function retiredTerms(){
+  const qs=(QSTATS&&QSTATS.queries)||(DATA&&DATA.query_perf)||{};
+  return Object.entries(qs).filter(([,s])=>s.status==="retired")
+              .sort((a,b)=>(a[1].score||0)-(b[1].score||0));
+}
+function toggleRevive(q){
+  q=q.replace(/&amp;/g,"&").replace(/&lt;/g,"<").replace(/&gt;/g,">");
+  const i=REVIVED.indexOf(q);
+  if(i>=0) REVIVED.splice(i,1); else REVIVED.push(q);
+  SET=SET||{}; SET.revived_queries=REVIVED;
+  QDIRTY=true; render(); saveQueryOverrides();
 }
 function isPinned(q){ return (PINNED||[]).includes(q); }
 function isDisabled(q){ return (DISABLED||[]).includes(q); }
@@ -590,6 +652,7 @@ async function load(){
   catch(e){ SET=null; }
   PINNED=(SET&&Array.isArray(SET.pinned_queries))?SET.pinned_queries.slice():[];
   DISABLED=(SET&&Array.isArray(SET.disabled_queries))?SET.disabled_queries.slice():[];
+  REVIVED=(SET&&Array.isArray(SET.revived_queries))?SET.revived_queries.slice():[];
   try{ const q=await fetch("query_stats.json",{cache:"no-store"}); QSTATS=q.ok?await q.json():null; }
   catch(e){ QSTATS=null; }
   try{ const fb=await fetch("feedback.json",{cache:"no-store"});
@@ -686,6 +749,24 @@ function render(){
 
     ${stale?`<div class="empty" style="margin-bottom:16px;border-color:rgba(244,63,94,.4);color:#fb7185;font-size:12px;padding:12px">⚠ Data is ${Math.round(ageMin/60)}h old — the scanner may have stalled. Hit ⚡ run now, or check the Actions log.</div>`:""}
 
+    <nav class="tabs" role="tablist">
+      ${[["listings","Listings", rest.length+saved.length],
+         ["dead","Dead Listings", Object.keys(ENDED).length + retiredTerms().length],
+         ["data","Data", null],
+         ["settings","Settings", null]].map(([k,l,n])=>
+        `<button class="tab ${F.tab===k?"on":""}" role="tab" aria-selected="${F.tab===k}"
+                 onclick="setF('tab','${k}')">${l}${n!=null?`<span class="cnt">${n}</span>`:""}</button>`).join("")}
+    </nav>
+    ${F.tab!=="settings"?`
+    <div class="ticker">
+      <div class="tk"><div class="k">spot</div><div class="v">${fmt(d.spot_per_oz)}<span style="font-size:.55em;color:#737373">/oz</span></div></div>
+      ${karats().map(k=>
+        `<div class="tk"><div class="k">${k}</div><div class="v sm">${fmt(d.prices_per_gram[k])}<span style="font-size:.6em;color:#737373">/g</span></div></div>`).join("")}
+      <div class="tk"><div class="k">live deals</div><div class="v grn">${d.deals.length}</div></div>
+      <div class="tk"><div class="k">on the table</div><div class="v grn sm">${fmt(totalProfit)}</div></div>
+    </div>`:""}
+
+    ${F.tab==="listings"?`
     <section><div class="stats">
       <div class="stat"><div class="v grn">${d.deals.length}</div><div class="k">live deals</div></div>
       <div class="stat"><div class="v amb">${newCount}</div><div class="k">new since last visit</div></div>
@@ -698,11 +779,10 @@ function render(){
     <section class="cmd">
       <div class="cmd-top">
         <div class="cmd-count"><b>${rest.length+saved.length}</b> showing<span class="cmd-sub">of ${d.deals.length+ (d.traps||[]).length} found · ${fmt(totalProfit)} on the table</span></div>
-        <button class="btn ghost sm" onclick="setF('settingsOpen',!F.settingsOpen)">engine settings</button>
       </div>
       <div class="cmd-grid">
         <div class="fgroup"><span class="flabel">karat</span>
-          ${["All","10K","14K","18K","22K","24K"].map(k=>
+          ${["All",...karats()].map(k=>
             `<button class="chip ${F.karat===k?"on":""}" onclick="setF('karat','${k}')">${k}</button>`).join("")}</div>
         <div class="fgroup"><span class="flabel">sort</span>
           ${[["score","best score"],["profit","most profit"],["age","newest"],["pricedrop","price dropped"]].map(([v,l])=>
@@ -734,7 +814,43 @@ function render(){
       ${rest.length===0&&saved.length===0?`<div class="empty">Nothing matches these filters right now.</div>`:rest.map(dealRow).join("")}
     </section>
 
-    ${endedArr.length?`${(()=>{ const QD=queryDealData(); return `
+    ${endedArr.length?``:""}
+
+    ${F.tab==="dead"?`
+    <section>
+      <div class="sec-hdr" onclick="setF('showEnded',!F.showEnded)">
+        <div class="label">Recently sold / ended · last ${ENDED_TTL_DAYS}d (${endedArr.length})</div>
+        <span class="sec-toggle">${F.showEnded?"▲ collapse":"▼ expand"}</span>
+      </div>
+      ${F.showEnded?`
+        <div class="note" style="margin:2px 0 8px;color:#737373">Listings that dropped out of the live feed — likely sold or ended (a listing can also just be pulled by the seller, so read it as directional). A gauge of what's actually moving at these prices.</div>
+        ${endedArr.slice(0,ENDED_SHOW).map(endedRow).join("")}
+        ${endedArr.length>ENDED_SHOW?`<div class="note" style="color:#525252;margin-top:6px">+${endedArr.length-ENDED_SHOW} older not shown</div>`:""}
+      `:""}
+    </section>`:""}
+
+    
+    <section>
+      <div class="label" style="margin-bottom:6px">Retired search terms</div>
+      <div class="note" style="margin-bottom:8px;color:#525252">Dropped automatically for not earning their slot — either they never found a real deal, or traps and 👎 outweighed what they brought back. Bringing one back wipes its record and gives it a clean trial; each term gets ${CFG("max_revives",2)} before it's done for good.</div>
+      ${retiredTerms().length?retiredTerms().map(([q,s])=>{
+        const revived=(REVIVED||[]).includes(q);
+        const spent=(s.revives||0)>=CFG("max_revives",2);
+        return `<div class="rt ${revived?"revived":""} ${spent&&!revived?"spent":""}">
+          <div class="q">${esc(q)}</div>
+          <div class="why">${s.traps?`${s.traps} traps`:"no deals"}${s.score!=null?` · score ${s.score}`:""}${s.revives?` · revived ${s.revives}×`:""}</div>
+          ${revived
+            ? `<button class="chip on" onclick="toggleRevive('${esc(q).replace(/'/g,"\\'")}')">queued ✓</button>`
+            : spent
+              ? `<span class="why">out of trials — pin it to force it</span>`
+              : `<button class="chip" onclick="toggleRevive('${esc(q).replace(/'/g,"\\'")}')">bring back</button>`}
+          <button class="iact xs ${isPinned(q)?"on":""}" title="pin: always run, never retire" onclick="toggleQuery('pin','${esc(q).replace(/'/g,"\\'")}')">★</button>
+        </div>`;}).join("")
+      :`<div class="empty">Nothing retired yet. Terms start getting judged after ${CFG("retire_min_runs",8)} sweeps.</div>`}
+    </section>
+`:""}
+
+    ${F.tab==="data"?`${(()=>{ const QD=queryDealData(); return `
     <section>
       <div class="sec-hdr" onclick="setF('showQueries',!F.showQueries)">
         <div class="label">Deals by search term · ${QD.rows.length} tracked${QSTATS&&QSTATS.meta?` · run ${QSTATS.meta.run_counter}`:""}</div>
@@ -800,29 +916,18 @@ function render(){
           <span class="sec-toggle">${F.showPrices?"▲":"▼"}</span>
         </div>
       </div>
-      ${F.showPrices?`<div class="prices">${KARATS.map(k=>`<div class="price"><div class="pk">${k}</div><div class="pv">${fmt(d.prices_per_gram[k])}</div></div>`).join("")}</div>`:""}
+      ${F.showPrices?`<div class="prices">${karats().map(k=>`<div class="price"><div class="pk">${k}</div><div class="pv">${fmt(d.prices_per_gram[k])}</div></div>`).join("")}</div>`:""}
     </section>
+`:""}
 
-    <section>
-      <div class="sec-hdr" onclick="setF('showEnded',!F.showEnded)">
-        <div class="label">Recently sold / ended · last ${ENDED_TTL_DAYS}d (${endedArr.length})</div>
-        <span class="sec-toggle">${F.showEnded?"▲ collapse":"▼ expand"}</span>
-      </div>
-      ${F.showEnded?`
-        <div class="note" style="margin:2px 0 8px;color:#737373">Listings that dropped out of the live feed — likely sold or ended (a listing can also just be pulled by the seller, so read it as directional). A gauge of what's actually moving at these prices.</div>
-        ${endedArr.slice(0,ENDED_SHOW).map(endedRow).join("")}
-        ${endedArr.length>ENDED_SHOW?`<div class="note" style="color:#525252;margin-top:6px">+${endedArr.length-ENDED_SHOW} older not shown</div>`:""}
-      `:""}
-    </section>`:""}
-
-    
-    <section class="panel ${F.settingsOpen?"":"hidden"}" id="settings">
+    ${F.tab==="settings"?`
+    <section class="panel" id="settings">
       <div class="label" style="margin-bottom:10px">Engine settings · these change what the NEXT run does</div>
       <div class="row" style="margin-bottom:12px">
         <div class="ctl"><span>Buyer payout %</span><input id="s_payout" type="number" step="1" value="${Math.round((SET.payout_pct||1)*100)}"></div>
         <div class="ctl"><span>Trap threshold %</span><input id="s_trap" type="number" step="1" value="${Math.round((SET.trap_under_pct||.5)*100)}"></div>
         <div class="ctl"><span>Min seller %</span><input id="s_seller" type="number" step="1" value="${SET.min_feedback_pct||96}"></div>
-        <div class="ctl"><span>Alert at score</span><input id="s_alert" type="number" step="1" value="${SET.alert_min_score||70}"></div>
+        <div class="ctl"><span>Alert at score</span><input id="s_alert" type="number" step="1" value="${CFG("alert_min_score",70)}"></div>
       </div>
       <div class="ctl" style="margin-bottom:12px"><span>Search terms — one per line</span>
         <textarea id="s_queries">${(SET.queries||[]).join("\n")}</textarea></div>
@@ -835,12 +940,9 @@ function render(){
         <div class="ctl"><span>Runs per day (0 = auto)</span><input id="s_rpd" type="number" step="1" min="0" value="${SET.runs_per_day||0}"></div>
         <div class="ctl"><span>History depth (runs kept)</span><input id="s_histmax" type="number" step="500" value="${SET.history_max||10000}"></div>
         <div class="ctl"><span>Feedback strength %</span><input id="s_fbspan" type="number" step="1" min="0" max="50" value="${Math.round((SET.fb_weight_span??0.15)*100)}"></div>
-        <label class="toggle" style="align-self:end"><input type="checkbox" id="s_nomixed" ${SET.exclude_mixed!==false?"checked":""}> exclude mixed-karat / lots</label>
       </div>
       <div class="row" style="margin-bottom:10px">
-        <label class="toggle"><input type="checkbox" id="s_agonly" ${SET.auth_guarantee_only!==false?"checked":""}> only Authenticity Guarantee listings</label>
-        <label>ship-to ZIP <input id="s_zip" type="text" size="6" value="${SET.delivery_postal_code||"33101"}"></label>
-        <span class="note">eBay returns <b>nothing</b> for the Authenticity Guarantee filter unless a ship-to ZIP is set — leave this filled whenever the toggle is on.</span>
+        <span class="note">Authenticity Guarantee and mixed-karat lots are shown or hidden from the Listings tab, not filtered here — the engine always collects both.</span>
       </div>
       <div class="row" style="margin-bottom:10px">
         <span class="label">Sort sweep</span>
@@ -851,7 +953,7 @@ function render(){
         <label class="toggle"><input type="checkbox" id="s_explore" ${SET.explore_enabled!==false?"checked":""}> try new searches with spare budget</label>
         <div class="ctl"><span>Explore % of slots</span><input id="s_exfrac" type="number" step="1" min="0" max="50" value="${Math.round((SET.explore_frac??0.12)*100)}"></div>
         <div class="ctl"><span>Promote at N deals</span><input id="s_promote" type="number" step="1" value="${SET.promote_min_deals||3}"></div>
-        <div class="ctl"><span>Retire after N dry runs</span><input id="s_retire" type="number" step="1" value="${SET.retire_min_runs||25}"></div>
+        <div class="ctl"><span>Retire after N dry runs</span><input id="s_retire" type="number" step="1" value="${CFG("retire_min_runs",8)}"></div>
       </div>
       <div class="ctl" style="margin-bottom:12px"><span>Your own candidate searches to try — one per line (explorer picks these first)</span>
         <textarea id="s_pool" style="min-height:50px">${(SET.explore_pool||[]).join("\n")}</textarea></div>
@@ -876,6 +978,7 @@ function render(){
     ${d._sample?`<div class="empty" style="margin-bottom:12px;border-color:rgba(180,120,10,.4);color:#fcd34d;font-size:11px;padding:10px">Showing sample data until the scout writes results.json.</div>`:""}
     ${d.carried_from?`<div class="empty" style="margin-bottom:12px;border-color:rgba(180,120,10,.4);color:#fcd34d;font-size:11px;padding:10px">⚠ Last sweep returned nothing (likely eBay quota/API hiccup) — showing the last good results from ${new Date(d.carried_from).toLocaleString([],{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})}. Prices/availability may have shifted; the engine keeps retrying on schedule.</div>`:""}
     ${d.traps_count>0&&F.trapMode==="hide"?`<div class="traps">⚠ ${d.traps_count} likely trap(s) hidden — set traps to "all" or "only" to inspect</div>`:""}
+`:""}
 <div id="fbmsg" class="note" style="margin:8px 0"></div>
 
     <div class="foot">👍/👎 on any listing is the only thing that teaches the engine. 👍 boosts that search term and seller; 👎 opens a short "why?" prompt, and the reason decides what gets penalised — plated or wrong-weight hits push the <b>search term</b> down hard, a sketchy seller pushes the <b>seller</b> down, and "not profitable" or "not my style" are recorded but never punish anything, because those are pricing and taste rather than a bad search. Nothing you tap ever edits the scoring rules themselves; it only changes which searches get run and how they rank. Ratings commit to the repo a few seconds after you tap (needs the GitHub token below). ⚡ run now triggers an immediate sweep (≈2 min, then refresh). Click a listing to open it (marks it seen). ★ saves to the top pile, ✕ hides for good. Sellers you repeatedly rate good earn a ★ trusted badge and a small ranking bump. When a listing drops out of the feed it moves to <b>Recently sold / ended</b> for ${ENDED_TTL_DAYS} days. All triage is stored on this device. Stated weight and photos still need your eye before bidding.</div>`;
@@ -1082,7 +1185,15 @@ function gatherSettings(){
   const lines=document.getElementById("s_queries").value.split("\n").map(s=>s.trim()).filter(Boolean);
   const ex=document.getElementById("s_exclude").value.split(",").map(s=>s.trim()).filter(Boolean);
   const pool=(document.getElementById("s_pool")?.value||"").split("\n").map(s=>s.trim()).filter(Boolean);
-  const v=(id,dflt)=>{ const el=document.getElementById(id); return el? (+el.value||dflt): dflt; };
+  // Fall back to what the engine actually reports, then to what's already saved.
+  // A literal here silently reverts engine defaults whenever an input is blank —
+  // that's how a widened explore_frac would quietly snap back to an old value.
+  const v=(id,key,dflt)=>{ const el=document.getElementById(id);
+    const cur=CFG(key,(SET&&SET[key]!=null)?SET[key]:dflt);
+    return (el && el.value!=="") ? (+el.value||cur) : cur; };
+  const vp=(id,key,dflt)=>{ const el=document.getElementById(id);   // percent-scaled inputs
+    const cur=CFG(key,(SET&&SET[key]!=null)?SET[key]:dflt);
+    return (el && el.value!=="") ? ((+el.value||cur*100)/100) : cur; };
   // spread SET first: keys this panel doesn't render survive a save instead of being wiped
   return Object.assign({}, SET||{}, {
     payout_pct:(+document.getElementById("s_payout").value||100)/100,
@@ -1091,20 +1202,17 @@ function gatherSettings(){
     alert_min_score:+document.getElementById("s_alert").value||70,
     max_detail_calls:(SET&&SET.max_detail_calls)||30,
     extra_exclude:ex, queries:lines, fast_queries:(SET&&SET.fast_queries)||undefined,
-    daily_call_budget:v("s_budget",4500),
+    daily_call_budget:v("s_budget","daily_call_budget",4500),
     sort_mode:(SET&&SET._sort_mode_ui)||SET.sort_mode||"alternate",
-    exclude_mixed:!!document.getElementById("s_nomixed")?.checked,
-    auth_guarantee_only:!!document.getElementById("s_agonly")?.checked,
-    delivery_postal_code:(document.getElementById("s_zip")?.value||"").trim(),
-    pinned_queries:PINNED, disabled_queries:DISABLED,
+    pinned_queries:PINNED, disabled_queries:DISABLED, revived_queries:REVIVED,
     explore_enabled:!!document.getElementById("s_explore")?.checked,
-    explore_frac:v("s_exfrac",12)/100,
+    explore_frac:vp("s_exfrac","explore_frac",0.35),
     explore_pool:pool,
-    promote_min_deals:v("s_promote",3),
-    retire_min_runs:v("s_retire",25),
-    fb_weight_span:v("s_fbspan",15)/100,
-    runs_per_day:v("s_rpd",0),
-    history_max:v("s_histmax",10000),
+    promote_min_deals:v("s_promote","promote_min_deals",3),
+    retire_min_runs:v("s_retire","retire_min_runs",8),
+    fb_weight_span:vp("s_fbspan","fb_weight_span",0.15),
+    runs_per_day:v("s_rpd","runs_per_day",0),
+    history_max:v("s_histmax","history_max",10000),
   });
 }
 function setSortMode(m){ SET._sort_mode_ui=m; SET.sort_mode=m; render(); }

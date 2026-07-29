@@ -94,7 +94,7 @@
   "explore_frac": 0.12,
   "explore_pool": [],
   "promote_min_deals": 3,
-  "retire_min_runs": 25,
+  "retire_min_runs": 8,
   "exploit_share": 0.7,
   "fb_weight_span": 0.15,
   "fb_half_life_days": 45,
@@ -103,5 +103,10 @@
   "zero_alert_every": 6,
   "pinned_queries": [],
   "disabled_queries": [],
-  "strong_score": 70
+  "strong_score": 88,
+  "revived_queries": [],
+  "reserve_runs": 5,
+  "query_weights": {
+    "trap": -99.0
+  }
 }
