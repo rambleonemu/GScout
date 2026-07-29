@@ -151,5 +151,14 @@
   "verdict": "bad",
   "category": "stones",
   "ts": 1785346054884
+ },
+ {
+  "id": "v1|178354492805|0",
+  "query": "10k gold scrap grams",
+  "seller": "jcosto2",
+  "karat": "10K",
+  "verdict": "bad",
+  "category": "stones",
+  "ts": 1785365825977
  }
 ]
