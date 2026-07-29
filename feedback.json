@@ -79,5 +79,14 @@
   "verdict": "bad",
   "category": "stones",
   "ts": 1784915109966
+ },
+ {
+  "id": "v1|157587337479|0",
+  "query": "24k gold scrap grams",
+  "seller": "luxurydesign713",
+  "karat": "24K",
+  "verdict": "bad",
+  "category": "plated",
+  "ts": 1785345908132
  }
 ]
