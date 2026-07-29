@@ -88,5 +88,50 @@
   "verdict": "bad",
   "category": "plated",
   "ts": 1785345908132
+ },
+ {
+  "id": "v1|168564754495|0",
+  "query": "22k gold scrap grams",
+  "seller": "8ten1944",
+  "karat": "22K",
+  "verdict": "bad",
+  "category": "lot",
+  "ts": 1785345916181
+ },
+ {
+  "id": "v1|298540027450|0",
+  "query": "14k gold cufflinks grams",
+  "seller": "baysidethrift",
+  "karat": "14K",
+  "verdict": "bad",
+  "category": "plated",
+  "ts": 1785345920398
+ },
+ {
+  "id": "v1|256891484222|0",
+  "query": "18k gold watch case grams",
+  "seller": "afinewatch",
+  "karat": "18K",
+  "verdict": "bad",
+  "category": "stones",
+  "ts": 1785345933140
+ },
+ {
+  "id": "v1|256891387854|0",
+  "query": "14k gold watch case grams",
+  "seller": "afinewatch",
+  "karat": "14K",
+  "verdict": "bad",
+  "category": "stones",
+  "ts": 1785345944618
+ },
+ {
+  "id": "v1|278226303751|0",
+  "query": "14k gold ring grams",
+  "seller": "nancy9525",
+  "karat": "14K",
+  "verdict": "bad",
+  "category": "stones",
+  "ts": 1785345966964
  }
 ]
