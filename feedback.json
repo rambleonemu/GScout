@@ -160,5 +160,14 @@
   "verdict": "bad",
   "category": "stones",
   "ts": 1785365825977
+ },
+ {
+  "id": "v1|137561516692|0",
+  "query": "18k gold pendant grams",
+  "seller": "kenobiscollection",
+  "karat": "18K",
+  "verdict": "good",
+  "category": null,
+  "ts": 1785365891352
  }
 ]
