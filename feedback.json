@@ -178,5 +178,14 @@
   "verdict": "good",
   "category": null,
   "ts": 1785365923008
+ },
+ {
+  "id": "v1|267739594471|0",
+  "query": "10k gold earrings grams",
+  "seller": "ketch3610",
+  "karat": "10K",
+  "verdict": "bad",
+  "category": "stones",
+  "ts": 1785366164813
  }
 ]
