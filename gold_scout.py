@@ -17,7 +17,7 @@ No extra eBay keys needed beyond your App ID + Cert ID.
 
 import os, re, csv, time, json, base64, smtplib, requests
 import html as _html
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from email.message import EmailMessage
 
 CLIENT_ID     = os.environ.get("EBAY_CLIENT_ID", "PASTE_APP_ID")
@@ -55,6 +55,37 @@ CONFIG = {
     "results_per_query": 50,
     "deep_scan":        True,
     "max_detail_calls": 35,   # hard cap per run, protects your daily eBay quota
+    # Share of the detail-call budget spent CONFIRMING Authenticity Guarantee status
+    # rather than recovering weights from descriptions. eBay only returns the
+    # addonServices container (which is what tells us the optional AG add-on is
+    # purchasable, and for how much) on getItem — the search response never has it.
+    # So confirming "can I buy this with a guarantee?" costs one call per listing.
+    "ag_detail_share": 0.5,
+
+    # ---- Authenticity Guarantee (AG) ----
+    # Three states a listing can be in, and what each costs you:
+    #   included  - eBay authenticates it, no charge to you (jewelry >= ag_required_min)
+    #   optional  - you can add authentication at checkout for ag_fee (jewelry in the
+    #               ag_optional_min..ag_optional_max band). The fee is real money and is
+    #               charged into the deal maths below, not just displayed.
+    #   none      - no authentication available at any price; you're on your own
+    # Bands and fee per eBay's published jewelry AG terms. They're settings, not
+    # constants, because eBay has changed them before and will again.
+    "ag_mode": "prefer",       # require | prefer | off  (see ag_allow_unguaranteed)
+    "ag_fee": 40.0,            # buyer-paid optional AG fee for jewelry
+    "ag_optional_min": 200.0,  # below this, AG can't be added at any price
+    "ag_optional_max": 499.99, # top of the optional add-on band
+    "ag_required_min": 500.0,  # at/above this AG is mandatory and eBay pays for it
+    # Score points deducted from a listing with no authentication available. This is
+    # how strongly "I'd rather buy protected" is expressed, and there is no single
+    # correct number: the AG fee is FIXED at ~$40 while melt value scales with weight,
+    # so paying it costs ~31 score points on a 4g piece but only ~10 on a 12g one.
+    # At 25 the engine prefers the guaranteed buy on roughly 6g and up, and still lets
+    # a small, cheap piece be taken unprotected — where $40 to insure a $200 purchase
+    # genuinely may not pay for itself. Raise toward 35 to prefer protection almost
+    # always; use ag_mode="require" to make it absolute.
+    "ag_score_penalty": 25,
+    "ag_confirm_min_score": 45,# only spend a detail call confirming AG above this score
     "json_out":   "results.json",
     "deals_csv":  "gold_candidates.csv",
     "traps_csv":  "gold_traps.csv",
@@ -80,16 +111,35 @@ CONFIG = {
     "fb_weight_span": 0.15,     # max score nudge: ±15%. 0 disables learning entirely
     "fb_seller_block_bad": 2,   # decayed bad-seller signals with zero goods -> seller skipped
     # which categories move which trust weights (query / seller), overridable
+    # What a 👎 actually penalises, by reason.
+    #
+    # The dividing line is: could the search term have known? A term asked eBay for
+    # solid gold jewellery by weight. If eBay returned exactly that and OUR filters
+    # failed to spot the plating, the stones, the second metal or the misread weight,
+    # then the term did its job and the defect is ours. Penalising the term for it
+    # retires good searches, leaves the bug in place, and dresses the whole thing up
+    # as evidence — while the numbers are really measuring our own parser.
+    #
+    # So the defect categories carry ZERO query weight and feed the parsing backlog
+    # instead. What still penalises a term is the term genuinely fetching the wrong
+    # kind of thing ("irrelevant"), which no filter could have rescued.
     "fb_effects": {
-        "plated":       {"query": 1.0, "seller": 1.0},
-        "weight_karat": {"query": 1.0, "seller": 0.0},
-        "stones":       {"query": 0.6, "seller": 0.0},
-        "seller":       {"query": 0.0, "seller": 1.0},
+        # --- our defects: never blame the search term ---
+        "plated":       {"query": 0.0, "seller": 1.0},   # NOT_SOLID should have caught it
+        "weight_karat": {"query": 0.0, "seller": 0.0},   # weight parser defect
+        "stones":       {"query": 0.0, "seller": 0.0},   # HAS_STONE defect
+        "mixed":        {"query": 0.0, "seller": 0.0},   # MIXED_METAL defect
+        # --- genuinely the term's doing ---
+        "irrelevant":   {"query": 1.0, "seller": 0.0},   # fetched the wrong kind of item
         "lot":          {"query": 0.5, "seller": 0.0},
+        # --- neither ---
+        "seller":       {"query": 0.0, "seller": 1.0},
         "overpriced":   {"query": 0.0, "seller": 0.0},   # pricing math, not their fault
         "style":        {"query": 0.0, "seller": 0.0},   # taste — logged, never punished
         "other":        {"query": 0.0, "seller": 0.0},
     },
+    # Reasons that mean "our filter let this through", routed to parsing_defects.json.
+    "defect_categories": ["plated", "weight_karat", "stones", "mixed"],
 
     # ---- manual query overrides (set from the dashboard's deals-by-search chart) ----
     # These are your explicit calls and always beat the engine's automatic judgement:
@@ -98,6 +148,8 @@ CONFIG = {
     "pinned_queries": [],
     "disabled_queries": [],
     "revived_queries": [],
+    "manual_queries": [],       # one-shot override from the dashboard Run drawer
+    "manual_run_id": "",
 
     # ---- dynamic query engine ----
     "query_stats_file": "query_stats.json",
@@ -108,8 +160,20 @@ CONFIG = {
                                 # The point is to hunt for terms, not re-run known ones.
     "explore_pool": [],         # your own candidate searches to try first (from dashboard)
     "promote_min_deals": 3,     # explore query with this many total deals -> promoted to core
-    "retire_min_runs": 8,       # runs before a search can be judged. Lower than it was:
-                                # at 4 sweeps a day, 25 runs is over a week of dead weight.
+    "retire_min_runs": 20,      # runs before a search can be judged at all. Raised from 8:
+                                # a term only gets a slot some sweeps, so 8 runs was often
+                                # a handful of real trials — well inside the noise band for
+                                # a market where good listings appear a few times a week.
+                                # Terms were dying before they had a fair sample.
+    # Retirement is judged RELATIVE to the rest of the pool, not against a fixed number.
+    # A hard "score < 0" cutoff silently changes meaning as gold moves: when spot spikes,
+    # margins compress, every term's score sags and the fixed bar starts culling terms
+    # that are merely having a bad week. Retire the persistent bottom of the pack instead.
+    "retire_rel_median": 0.35,  # retire below this fraction of the live-pool median score
+    "retire_batch_cap": 2,      # most terms retirable in one sweep, so a bad run can't
+                                # gut the pool in a single pass
+    "retire_min_live": 12,      # never retire below this many live terms, whatever the scores
+    "retire_protect_liked": True,   # a term with net-positive 👍 is never auto-retired
     "starvation_cap": 6,        # rotation cadence hint (informational)
     "exploit_share": 0.7,       # share of core slots locked to proven top performers
 
@@ -128,10 +192,13 @@ CONFIG = {
         "thumbs_down": -3.0,    # you said this search found junk
     },
     "query_prior_runs": 3,      # smoothing: a new search isn't judged on one sweep
-    "retire_score_at": 0.0,     # below this (after retire_min_runs) a search is retired
     "max_revives": 2,           # fresh trials a retired search can be granted from the UI
     "strong_score": 70,         # at or above this, a deal counts as "strong" in the
                                 # per-search breakdown (matches the default alert floor)
+    "defects_file": "parsing_defects.json",
+    "suspect_score_penalty": 8,   # demotion applied to a "suspect" material grade
+    "reject_sample_max": 120,     # rejected listings kept for review each sweep
+    "ended_keep_days": 14,      # how long a vanished listing stays in Dead Listings
     "spot_stale_max_hours": 24, # how old a cached spot price may be during API outages
     # term lists the auto-explorer combines when your own pool runs dry
     "explore_karats": ["10k", "14k", "18k", "22k", "24k", "gold"],
@@ -242,9 +309,29 @@ FRACTION_RE = re.compile(r"(\d+)\s*/\s*(\d+)\s?(?:g\b|gr\b|gram|grams)", re.I)
 THOUSANDS_RE = re.compile(
     r"(?<![\d.,$])(\d{1,3}(?:,\d{3})+)(?=(?:\.\d+)?\s*(?:g\b|gr\b|grams?\b|dwt\b|pennyweight))",
     re.I)
+# A decimal point that got spaced out by a typo: "12. 23 grams", "8 . 5g".
 DECIMAL_SPLIT_RE = re.compile(
-    r"(?<![\d.,$])(\d+)\s*[.,]\s*(\d{1,2})(?=\s*(?:g\b|gr\b|grams?\b|dwt\b|pennyweight))",
+    r"(?<![\d.,$])(\d+)\s*\.\s*(\d{1,2})(?=\s*(?:g\b|gr\b|grams?\b|dwt\b|pennyweight))",
     re.I)
+# European decimal comma: "13,25g". Deliberately allows NO space after the comma.
+# A comma FOLLOWED BY A SPACE is a list separator, not a decimal point, and the two
+# were previously handled by one space-tolerant rule. That turned
+#   "... Size 6, 4 grams"  into  "6.4 grams"
+# inventing 2.4g of gold that doesn't exist and making a fairly priced ring look like
+# a deal. A real European decimal is written closed up; a size followed by a weight
+# is not. When it's ambiguous, taking the smaller number is the safe direction:
+# understating weight understates melt, which loses a deal rather than buying a dud.
+DECIMAL_COMMA_RE = re.compile(
+    r"(?<![\d.,$])(\d+),(\d{1,2})(?=\s*(?:g\b|gr\b|grams?\b|dwt\b|pennyweight))",
+    re.I)
+# Ring/chain sizing that sits next to the weight and gets mistaken for it.
+# Stripped before any weight parsing rather than guarded against case by case.
+# Note the size's own fractional part may use a PERIOD or a written fraction, but
+# never a comma: in "Size 6, 4 grams" the comma separates size from weight, so
+# allowing it here would make this rule swallow the weight it exists to protect.
+SIZE_CTX_RE = re.compile(
+    r"\b(?:ring\s*|band\s*)?(?:size|sz)\s*[:\-]?\s*"
+    r"\d{1,2}(?:\.\d{1,2}|\s*1/2|\s*½|\s*3/4|\s*1/4)?\s*[,;]?", re.I)
 DWT_TO_G = 1.55517
 # Weight explicitly attributed to gold (so we can price off gold, not total weight)
 GOLD_WT_RES = [
@@ -252,9 +339,146 @@ GOLD_WT_RES = [
     re.compile(r"\bgold\s*(?:weight|content|wt)\b\s*[:\-]?\s*(\d*\.?\d+)\s?(?:g\b|grams?|dwt)?", re.I),
 ]
 # An item specific that names a second, non-gold metal alongside the gold
+# A second, non-gold metal sharing the listing. Every one of these inflates the
+# stated weight with metal your buyer pays nothing for, so pricing the whole weight
+# as gold overstates melt and manufactures a deal that was never there.
+#
+# This used to be checked ONLY against item specifics on deep-scanned listings, which
+# meant the fast path — the great majority of rows — never tested for it at all, and
+# every "14k gold and sterling silver lot" sailed straight through to the board.
+# Note: "two tone" is deliberately NOT here. A tone is a colour, not a metal, and in
+# jewellery it usually means yellow + white GOLD — all of it solid, all of it saleable.
+# Treating it as a second metal rejected good pieces. TONE_RE handles it separately.
 MIXED_METAL = re.compile(
-    r"(two[\s-]?tone|2[\s-]?tone|mixed\s?metal|base\s?metal|with\s?(silver|steel|"
-    r"platinum)|gold\s?(and|&)\s?(silver|steel|platinum))", re.I)
+    r"(mixed\s?metal|base\s?metal|mixed\s?lot"
+    r"|\b(?:sterling|925|silver|platinum|plat|titanium|tungsten|stainless|steel|brass"
+    r"|copper|pewter|rhodium|palladium)\b"
+    r"|with\s?(silver|steel|platinum)"
+    r"|gold\s?(and|&|/|\+)\s?(silver|steel|platinum|sterling|925))", re.I)
+# Words that legitimately contain a metal name without the item containing that metal.
+# Checked first so "silver tone plated" style false positives don't cost a real lot —
+# and so "white gold" is never mistaken for a silver item.
+MIXED_METAL_OK = re.compile(
+    r"(silver\s?tone|silvertone|silver\s?plated|silver\s?colou?r"
+    r"|steel\s?blue|no\s?silver|not\s?silver)", re.I)
+
+
+def has_mixed_metal(text):
+    """True when the listing names a second, non-gold metal in its own right."""
+    if not text:
+        return False
+    cleaned = MIXED_METAL_OK.sub(" ", text)
+    return bool(MIXED_METAL.search(cleaned))
+
+
+# Small parts that are routinely a different metal on an otherwise solid gold piece:
+# a steel spring bar in a clasp weighs a fraction of a gram on a 20g chain. Naming one
+# is not the same as the item being mixed, and treating it as such throws away good
+# listings silently — the worst kind of loss, because a rejected listing leaves no
+# trace to notice later.
+COMPONENT_RE = re.compile(
+    r"\b(clasp|claw|lobster|spring\s?ring|jump\s?ring|bail|accent|accents|trim|inlay|"
+    r"spacer|bead|tip|end\s?cap|hook|catch|backing|back|post|screw\s?back|"
+    r"safety\s?chain|extender|pin|hinge|core|setting)\b", re.I)
+# "two tone" / "tri colour" most often means two or three COLOURS OF GOLD (yellow,
+# white, rose) — all of it solid gold and all of it saleable. Blocking the phrase
+# outright was rejecting perfectly good pieces.
+TONE_RE = re.compile(r"\b(two|2|tri|3|multi)[\s-]?(tone|color|colour)\b", re.I)
+GOLD_COLOR_RE = re.compile(r"\b(white|yellow|rose|pink|green)\s?gold\b", re.I)
+# stone words that describe something negligible or decorative rather than a set stone
+STONE_MINOR_RE = re.compile(r"\b(accent|accents|chip|chips|melee)\b", re.I)
+# Language that means the piece is genuinely stone-set, whatever adjectives surround
+# it. "Set with three small diamonds" is a stone-set ring, and a nearby "small" must
+# not buy it an exemption — the stones are still in the stated weight.
+STONE_SET_RE = re.compile(
+    r"\b(set\s?with|stone[\s-]?set|prong[\s-]?set|bezel[\s-]?set|pav[eé]|"
+    r"cluster|solitaire|halo|eternity|channel[\s-]?set|encrusted|studded)\b", re.I)
+
+
+def material_verdict(text):
+    """Grade a listing's materials instead of answering yes/no.
+
+    Three states, because the evidence genuinely comes in three strengths:
+
+      blocked - definitional or primary. "Gold plated" is not gold; "sterling silver
+                and 14k gold ring" is mostly silver. No amount of context rescues these.
+      suspect - a second material is named, but in a position that suggests a minor
+                component ("steel spring clasp"), or a phrase that is ambiguous by
+                nature ("two tone", which is usually two colours of gold). KEPT, tagged,
+                slightly demoted, and prioritised for a detail call that can settle it.
+      clear   - nothing found.
+
+    The point of the middle state is that a binary filter has to choose which way to be
+    wrong, and choosing "reject" makes the error invisible: a false positive shows up on
+    your board where you can flag it, while a false negative is a deal you simply never
+    saw. Suspects stay visible and get resolved on evidence."""
+    if not text:
+        return {"state": "clear", "reason": "", "tags": []}
+    tags = []
+
+    if NOT_SOLID.search(text):
+        return {"state": "blocked", "reason": "plated, filled or clad — not solid gold",
+                "tags": ["plated"]}
+    if WATCH_RE.search(text):
+        return {"state": "blocked", "reason": "watch — structurally mixed material",
+                "tags": ["watch"]}
+    if EXTRA_EXCLUDE_RE and EXTRA_EXCLUDE_RE.search(text):
+        return {"state": "blocked", "reason": "matched one of your own exclude words",
+                "tags": ["user_exclude"]}
+
+    cleaned = MIXED_METAL_OK.sub(" ", text)
+
+    # --- second metal: primary material, or a minor component? ---
+    metal_hits = list(MIXED_METAL.finditer(cleaned))
+    if metal_hits:
+        def is_component(m):
+            # look a few words either side for a component noun, or a leading "with"
+            lo, hi = max(0, m.start() - 28), min(len(cleaned), m.end() + 28)
+            window = cleaned[lo:hi]
+            # Must name an actual small part. A bare "with" is not enough: "14k gold
+            # with a sterling silver clasp" is a component, "14k gold with a stainless
+            # steel band" is the main body of the piece wearing the same preposition.
+            return bool(COMPONENT_RE.search(window))
+        if all(is_component(m) for m in metal_hits):
+            tags.append("component_metal")
+        else:
+            names = ", ".join(sorted({m.group(0).lower() for m in metal_hits}))
+            return {"state": "blocked",
+                    "reason": f"names {names} as a main material — the weight isn't all gold",
+                    "tags": ["mixed_primary"]}
+
+    # --- tone words: two colours of gold, or two metals? ---
+    if TONE_RE.search(text):
+        if GOLD_COLOR_RE.search(text) and not metal_hits:
+            pass                       # "two tone white and yellow gold" — all gold
+        else:
+            tags.append("tone_ambiguous")
+
+    # --- stones ---
+    stone_txt = re.sub(r"diamond[\s-]?cut", "", text, flags=re.I)
+    stone_txt = re.sub(r"\b(no|without|free\s?of|minus)\s+(stone|stones|gem|gems|"
+                       r"gemstone|gemstones|diamond|diamonds)\b", "", stone_txt, flags=re.I)
+    stone_txt = re.sub(r"\b(stone|gem|diamond)[\s-]?free\b", "", stone_txt, flags=re.I)
+    sm = HAS_STONE.search(stone_txt)
+    if sm:
+        lo, hi = max(0, sm.start() - 28), min(len(stone_txt), sm.end() + 28)
+        if STONE_SET_RE.search(stone_txt):
+            return {"state": "blocked",
+                    "reason": f"stone-set piece ({sm.group(0).lower()}) — stated weight isn't all gold",
+                    "tags": ["stones"]}
+        if STONE_MINOR_RE.search(stone_txt[lo:hi]):
+            tags.append("stone_accent")
+        else:
+            return {"state": "blocked",
+                    "reason": f"stones present ({sm.group(0).lower()}) — stated weight isn't all gold",
+                    "tags": ["stones"]}
+
+    if tags:
+        why = {"component_metal": "another metal named, but only on a small component",
+               "tone_ambiguous": "two/tri-tone — may be two colours of gold, may be two metals",
+               "stone_accent": "accent stones mentioned — likely minor, but weight may include them"}
+        return {"state": "suspect", "reason": "; ".join(why[t] for t in tags), "tags": tags}
+    return {"state": "clear", "reason": "", "tags": []}
 
 
 def karat_from_text(text):
@@ -285,8 +509,11 @@ def extract_grams(text):
     checked first so '1/2 gram' isn't misread as 2 grams."""
     if not text:
         return None
+    # Drop ring-size phrases first: "Size 6, 4 grams" must read as 4g, not 6.4g.
+    text = SIZE_CTX_RE.sub(" ", text)
     text = THOUSANDS_RE.sub(lambda m: m.group(1).replace(",", ""), text)
     text = DECIMAL_SPLIT_RE.sub(r"\1.\2", text)
+    text = DECIMAL_COMMA_RE.sub(r"\1.\2", text)
     m = FRACTION_RE.search(text)
     if m:
         num, den = float(m.group(1)), float(m.group(2))
@@ -317,8 +544,13 @@ def extract_gold_grams(text):
     if no gold-specific weight is stated."""
     if not text:
         return None
+    # Same normalisation as extract_grams, kept deliberately identical: a size/decimal
+    # rule that only applies on one of the two paths is a silent disagreement about
+    # what a listing weighs, depending on which parser happened to reach it first.
+    text = SIZE_CTX_RE.sub(" ", text)
     text = THOUSANDS_RE.sub(lambda m: m.group(1).replace(",", ""), text)
     text = DECIMAL_SPLIT_RE.sub(r"\1.\2", text)
+    text = DECIMAL_COMMA_RE.sub(r"\1.\2", text)
     for rx in GOLD_WT_RES:
         m = rx.search(text)
         if m:
@@ -331,21 +563,9 @@ def extract_gold_grams(text):
 
 
 def is_solid_no_stones(text):
-    if NOT_SOLID.search(text):
-        return False
-    if NON_GOLD.search(text):
-        return False
-    if WATCH_RE.search(text):
-        return False
-    if EXTRA_EXCLUDE_RE and EXTRA_EXCLUDE_RE.search(text):   # your own words from settings
-        return False
-    cleaned = re.sub(r"diamond[\s-]?cut", "", text, flags=re.I)
-    cleaned = re.sub(r"\b(no|without|free\s?of|minus)\s+(stone|stones|gem|gems|"
-                     r"gemstone|gemstones|diamond|diamonds)\b", "", cleaned, flags=re.I)
-    cleaned = re.sub(r"\b(stone|gem|diamond)[\s-]?free\b", "", cleaned, flags=re.I)
-    if HAS_STONE.search(cleaned):
-        return False
-    return True
+    """Kept as the single yes/no gate, but now only 'blocked' means no. Suspects pass
+    through so they can be seen, tagged and resolved rather than silently dropped."""
+    return material_verdict(text)["state"] != "blocked"
 
 
 def seller_ok(item, cfg):
@@ -381,7 +601,11 @@ def load_settings(cfg):
             s = json.load(f)
     except Exception:
         return
-    for k in ("query_prior_runs", "retire_score_at", "max_revives", "reserve_runs",
+    for k in ("query_prior_runs", "max_revives", "reserve_runs",
+              "retire_rel_median", "retire_batch_cap", "retire_min_live",
+              "ag_fee", "ag_optional_min", "ag_optional_max", "ag_required_min",
+              "ag_score_penalty", "ag_confirm_min_score", "ag_detail_share",
+              "suspect_score_penalty", "reject_sample_max",
               "strong_score",
               "payout_pct", "trap_under_pct", "max_detail_calls",
               "min_feedback_pct", "min_feedback_score", "results_per_query",
@@ -396,9 +620,11 @@ def load_settings(cfg):
         for k, v in s["query_weights"].items():
             if isinstance(v, (int, float)):
                 cfg["query_weights"][k] = float(v)
-    for k in ("explore_enabled",):
+    for k in ("explore_enabled", "retire_protect_liked"):
         if isinstance(s.get(k), bool):
             cfg[k] = s[k]
+    if s.get("ag_mode") in ("require", "prefer", "off"):
+        cfg["ag_mode"] = s["ag_mode"]
     for k in ("pinned_queries", "disabled_queries", "revived_queries"):
         if isinstance(s.get(k), list):
             cfg[k] = [str(q).strip() for q in s[k] if str(q).strip()]
@@ -415,6 +641,18 @@ def load_settings(cfg):
             if isinstance(eff, dict):
                 cfg["fb_effects"][cat] = {"query": float(eff.get("query", 0)),
                                           "seller": float(eff.get("seller", 0))}
+    # ---- one-shot manual run override ----
+    # The dashboard's Run drawer writes manual_queries + manual_run_id into
+    # settings.json, then dispatches the workflow. The engine consumes it exactly once:
+    # the id it last honoured is recorded in query_stats.json, so the scheduled sweeps
+    # that follow go back to normal rotation instead of repeating your ad-hoc sweep
+    # forever. Done this way because the workflow deploys to Pages and never commits
+    # back to the repo, so the engine can't clear the flag by editing settings itself.
+    if isinstance(s.get("manual_queries"), list) and s.get("manual_run_id"):
+        mq = [q.strip() for q in s["manual_queries"] if isinstance(q, str) and q.strip()]
+        if mq:
+            cfg["manual_queries"] = mq
+            cfg["manual_run_id"] = str(s["manual_run_id"])
     if isinstance(s.get("queries"), list):
         qs = [q.strip() for q in s["queries"] if isinstance(q, str) and q.strip()]
         if qs:
@@ -556,13 +794,26 @@ def explore_candidates(cfg, stats):
 
 
 def feedback_counts(cfg):
-    """Raw 👍/👎 totals per search term, undecayed.
+    """👍/👎 totals per search term, undecayed and WEIGHTED BY REASON.
 
     Separate from load_feedback()'s decayed multipliers on purpose: those nudge how a
-    listing is *alerted*, these decide whether a search keeps its slot. A thumb is a
-    direct instruction about the search that surfaced the listing, so it is counted
-    at full weight and never faded."""
+    listing is *alerted*, these decide whether a search keeps its slot.
+
+    The reason matters, and it used to be thrown away here. Every 👎 was counted at
+    full weight regardless of why it was given, which meant the fb_effects table —
+    written precisely so that "overpriced" and "not my style" never punish anything —
+    was honoured for alerting and silently ignored for rotation and retirement, the
+    decisions that actually kill a search term.
+
+    That mattered most for the defect categories. When a listing is junk because the
+    PARSER let it through (mixed materials, a misread weight, plating we failed to
+    catch), the search term did its job — it found a solid-gold listing matching the
+    words asked for. Punishing the term for a filter bug retires good terms and leaves
+    the bug in place, and the retirement looks evidence-based while measuring nothing
+    but our own defects. Those verdicts now carry zero rotation weight and are routed
+    to the parsing-defect backlog instead, where they belong."""
     counts = {}
+    eff = cfg.get("fb_effects", {})
     try:
         with open(cfg.get("feedback_file", "feedback.json")) as f:
             events = json.load(f).get("events", [])
@@ -575,8 +826,60 @@ def feedback_counts(cfg):
         if not q:
             continue
         c = counts.setdefault(q, {"up": 0, "down": 0})
-        c["up" if e.get("verdict") == "good" else "down"] += 1
+        if e.get("verdict") == "good":
+            c["up"] += 1
+            continue
+        cat = e.get("category") or "other"
+        # An uncategorised 👎 is a plain "this search found junk" and keeps full weight.
+        w = 1.0 if e.get("category") is None else float(
+            (eff.get(cat) or {}).get("query", 0.0))
+        c["down"] += w
     return counts
+
+
+def build_defect_backlog(cfg, deep_drops=None):
+    """Collect evidence that our own filters are the problem, for manual review.
+
+    Two sources, both meaning "this shouldn't have reached the board":
+      1. your 👎 taps whose reason is a defect category (plated / weight / stones /
+         mixed) — cases the filters missed and you caught by eye
+      2. listings the engine itself dropped on the post-detail material re-check
+
+    This file is EVIDENCE ONLY. Nothing here ever auto-edits a regex, a filter or a
+    score: a rule that rewrites itself from noisy signals will happily learn its way
+    into excluding your best listings, and you'd have no way to see it happen. The
+    backlog tells you which pattern is leaking and how often, and you change the rule
+    deliberately or not at all."""
+    from collections import Counter
+    out = {"generated": datetime.now(timezone.utc).isoformat(),
+           "by_category": {}, "engine_drops": [], "samples": []}
+    defect_cats = set(cfg.get("defect_categories", []))
+    try:
+        with open(cfg.get("feedback_file", "feedback.json")) as f:
+            events = json.load(f).get("events", [])
+    except Exception:
+        events = []
+    cats = Counter()
+    for e in events:
+        if not isinstance(e, dict) or e.get("verdict") == "good":
+            continue
+        cat = e.get("category")
+        if cat in defect_cats:
+            cats[cat] += 1
+            if len(out["samples"]) < 60:
+                out["samples"].append({"category": cat, "query": e.get("query", ""),
+                                       "id": e.get("id", ""), "ts": e.get("ts")})
+    out["by_category"] = dict(cats)
+    drops = deep_drops or []
+    out["engine_drops"] = drops[:60]
+    out["engine_drop_reasons"] = dict(Counter(d.get("reason", "?") for d in drops))
+    out["total"] = sum(cats.values()) + len(drops)
+    try:
+        with open(cfg.get("defects_file", "parsing_defects.json"), "w") as f:
+            json.dump(out, f, indent=2)
+    except Exception as e:
+        print(f"[defects] couldn't write backlog: {e}")
+    return out
 
 
 def query_value(st, cfg, fb=None):
@@ -611,6 +914,17 @@ def select_queries(cfg, stats, query_mult):
     """
     rc = stats["meta"]["run_counter"]
     sorts = sorts_for_run(cfg, rc)
+
+    # One-shot manual override: run exactly the terms picked in the Run drawer, once.
+    mrid = cfg.get("manual_run_id") or ""
+    if cfg.get("manual_queries") and mrid and mrid != stats["meta"].get("manual_run_done"):
+        mq = list(dict.fromkeys(cfg["manual_queries"]))
+        stats["meta"]["manual_run_done"] = mrid
+        stats["meta"]["manual_run_at"] = datetime.now(timezone.utc).isoformat()
+        print(f"[manual] one-shot run of {len(mq)} hand-picked term(s) (id {mrid[:8]}) "
+              f"— normal rotation resumes next sweep")
+        return mq, [], sorts
+
     rpd = estimate_runs_per_day(cfg)
     # Leave room for unscheduled manual sweeps: divide the day's budget by the runs we
     # expect PLUS a reserve, so ad-hoc "run now" clicks come out of slack rather than
@@ -748,22 +1062,53 @@ def update_query_stats(cfg, stats, ran, rows):
                 and real_deals(st) >= cfg["promote_min_deals"]):
             st["status"] = "promoted"
             promoted.append(q)
-        # Retire on evidence of not earning its slot: either it never found a real
-        # deal, or its weighted score went negative (traps and 👎 outweighing hits).
-        # The old rule required zero traps too, so trap factories ran forever.
-        if st.get("status") != "retired" and st.get("runs", 0) >= cfg["retire_min_runs"]:
-            score = query_value(st, cfg, fbc.get(q))
-            if real_deals(st) == 0 or score < cfg.get("retire_score_at", 0.0):
-                st["status"] = "retired"
-                st["retired_score"] = round(score, 3)
-                retired.append(q)
+        # Retirement is decided in a second pass below, once every term's score for
+        # this sweep is known — a relative rule can't be evaluated one term at a time.
+    # ---- retirement pass: relative, capped, and floored ----
+    # Judged against the live pool's own median so the bar tracks actual market
+    # conditions instead of a number that was right on the day it was typed.
+    live = {q: st for q, st in qs.items()
+            if st.get("status") not in ("retired", "disabled") and q not in pinned}
+    scores = sorted(query_value(st, cfg, fbc.get(q)) for q, st in live.items())
+    median = scores[len(scores) // 2] if scores else 0.0
+    # A negative or zero median means the whole pool is struggling (dry market, gold
+    # spike compressing every margin). Culling the bottom of an already-bad pool just
+    # shrinks your coverage right when you need breadth most, so only the truly dead
+    # — terms that have never found a single real deal — go in that case.
+    rel = float(cfg.get("retire_rel_median", 0.35))
+    bar = median * rel if median > 0 else None
+    protect_liked = bool(cfg.get("retire_protect_liked", True))
+
+    cand = []
+    for q, st in live.items():
+        if st.get("runs", 0) < cfg["retire_min_runs"]:
+            continue
+        fb = fbc.get(q) or {}
+        if protect_liked and fb.get("up", 0) > fb.get("down", 0):
+            continue                       # you've vouched for this one
+        score = query_value(st, cfg, fb)
+        if real_deals(st) == 0:
+            cand.append((q, score, "no real deals in %d runs" % st["runs"]))
+        elif bar is not None and score < bar:
+            cand.append((q, score, f"score {score:.2f} < {bar:.2f} (35% of pool median)"))
+
+    cand.sort(key=lambda t: t[1])          # worst first
+    n_live = len(live)
+    floor = int(cfg.get("retire_min_live", 12))
+    room = max(0, n_live - floor)
+    for q, score, why in cand[:min(int(cfg.get("retire_batch_cap", 2)), room)]:
+        qs[q]["status"] = "retired"
+        qs[q]["retired_score"] = round(score, 3)
+        qs[q]["retired_why"] = why
+        retired.append(q)
+
     for q in promoted:
         print(f"[explore] PROMOTED to core: {q!r} — add it to your query list to lock it in")
     for q in retired:
-        st = qs[q]
-        why = ("no real deals" if real_deals(st) == 0
-               else f"score {st.get('retired_score')}")
-        print(f"[stats] retired ({why} over {st['runs']} runs): {q!r}")
+        print(f"[stats] retired ({qs[q].get('retired_why')}): {q!r}")
+    if cand and not retired:
+        print(f"[stats] {len(cand)} term(s) below the bar but kept "
+              f"({n_live} live, floor {floor}) — pool too small to cull")
     return promoted, retired
 
 
@@ -782,13 +1127,72 @@ API_ERRORS = {"count": 0, "quota": 0}   # non-200s this run; quota = HTTP 429s s
 
 
 def auth_guaranteed(item):
-    """True if eBay itself qualifies this item for the Authenticity Guarantee program.
-    Checked against both response shapes eBay uses: the item_summary/search
-    "qualifiedPrograms" array, and the item-detail "authenticityGuarantee" container
-    (present on getItem responses for deep-scanned items)."""
+    """True if eBay itself qualifies this item for the Authenticity Guarantee program
+    at no cost to the buyer. Checked against both response shapes eBay uses: the
+    item_summary/search "qualifiedPrograms" array, and the item-detail
+    "authenticityGuarantee" container (present on getItem responses)."""
     if "AUTHENTICITY_GUARANTEE" in (item.get("qualifiedPrograms") or []):
         return True
     return bool(item.get("authenticityGuarantee"))
+
+
+def ag_status(item, cfg, detail=None):
+    """Resolve what authentication is available on a listing, and what it costs.
+
+    Returns (state, fee, confirmed):
+      state     - "included" | "optional" | "none" | "unknown"
+      fee       - dollars you must pay to get the guarantee (0.0 unless "optional")
+      confirmed - True when this came from eBay's own data rather than a price-band guess
+
+    The distinction that matters: eBay only returns the `addonServices` container on
+    getItem/getItemByLegacyId. The search response (ItemSummary) carries
+    `qualifiedPrograms` and nothing else, so from a search hit alone we can prove AG is
+    *included* but we can NOT tell whether the paid add-on is available. That case comes
+    back as "unknown" with a band-based guess, and is only upgraded to a confirmed
+    "optional"/"none" by spending a detail call. Never treat an unconfirmed guess as a
+    guarantee — that is exactly the mistake this whole feature exists to prevent."""
+    fee_default = float(cfg.get("ag_fee", 40.0))
+
+    # --- confirmed paths: eBay's own data ---
+    for svc in (detail or item).get("addonServices") or []:
+        if (svc.get("serviceType") or "") != "AUTHENTICITY_GUARANTEE":
+            continue
+        sel = (svc.get("selection") or "").upper()
+        raw = ((svc.get("serviceFee") or {}).get("value"))
+        try:
+            fee = float(raw) if raw is not None else fee_default
+        except (TypeError, ValueError):
+            fee = fee_default
+        if sel == "REQUIRED":
+            # mandatory AG is eBay-funded for the buyer; a nonzero fee here would be
+            # eBay changing the deal, so honour whatever they actually returned
+            return ("included", round(fee, 2), True)
+        if sel == "OPTIONAL":
+            return ("optional", round(fee, 2), True)
+
+    if auth_guaranteed(detail or item) or auth_guaranteed(item):
+        return ("included", 0.0, True)
+
+    # A detail call came back with no AG addon and no AG container: that is a real,
+    # confirmed "you cannot buy authentication for this item".
+    if detail is not None:
+        return ("none", 0.0, True)
+
+    # --- unconfirmed: infer from the published price bands ---
+    # Only ever a hint for prioritising which listings are worth a detail call.
+    try:
+        price = float((item.get("price") or {}).get("value", 0) or 0)
+    except (TypeError, ValueError):
+        price = 0.0
+    ship = _ship_cost(item)
+    total = price + ship
+    if total >= float(cfg.get("ag_required_min", 500.0)):
+        # should have been caught by qualifiedPrograms; if it wasn't, the listing is
+        # probably AG-ineligible (branded-but-not-partner, non-continental-US seller)
+        return ("unknown", 0.0, False)
+    if float(cfg.get("ag_optional_min", 200.0)) <= total <= float(cfg.get("ag_optional_max", 499.99)):
+        return ("unknown", round(fee_default, 2), False)
+    return ("none", 0.0, False)   # under the floor: AG isn't offered at any price
 
 
 def search(token, query, limit, sort="price", cfg=None):
@@ -845,23 +1249,83 @@ def _ship_cost(item):
 
 
 def evaluate_core(item, karat, grams, spot24, cfg, title_text=None, photos=None,
-                  gold_specific=False, mixed_karats=None):
+                  gold_specific=False, mixed_karats=None, detail=None):
     if not seller_ok(item, cfg):
         return None
-    ag = auth_guaranteed(item)   # tagged for display/filtering, never an exclusion
     price = float((item.get("price") or {}).get("value", 0) or 0)
     if price <= 0 or grams <= 0:
         return None
     ship = _ship_cost(item)
     page_per_g = PURITY[karat] * spot24
-    cost = (price + ship) * (1 + cfg["tax_pct"])
+
+    # ---- authentication: what's available, what it costs, which way you'd buy ----
+    # A listing with a purchasable guarantee gives you two genuinely different deals:
+    # buy it unprotected at face cost, or pay the fee and buy it protected. Score BOTH
+    # and take whichever is better, which is what a rational buyer does anyway.
+    #
+    # Scoring only the fee-inclusive version created a cliff: a thin deal whose margin
+    # couldn't absorb the fee got quietly re-priced without it and outranked a healthier
+    # deal that correctly carried the fee. Taking the max of two monotonic branches
+    # removes the discontinuity instead of papering over it.
+    mat = material_verdict(f"{title_text or item.get('title','')}")
+    ag_state, ag_fee, ag_confirmed = ag_status(item, cfg, detail=detail)
+    ag = (ag_state == "included")
+    ag_mode = cfg.get("ag_mode", "prefer")
+    tax = 1 + cfg["tax_pct"]
+
+    base_cost = (price + ship) * tax
+    raw_all_in_g = base_cost / grams
+    if raw_all_in_g >= page_per_g:
+        return None                        # not under melt even before authentication
+    raw_under_by = (page_per_g - raw_all_in_g) / page_per_g
+
+    # trap on the RAW discount, never the fee-adjusted one: "too good to be true" is a
+    # property of the seller's asking price, and letting a $40 fee shrink it would pull
+    # plated fakes back under the threshold and present them as ordinary deals
+    is_trap = raw_under_by >= cfg["trap_under_pct"]
+
+    # A suspect is worth less than a clear listing of identical economics, but far more
+    # than nothing — which is what rejecting it was worth. Small and configurable.
+    mat_pen = int(cfg.get("suspect_score_penalty", 8)) if mat["state"] == "suspect" else 0
+    pen_none = int(cfg.get("ag_score_penalty", 12))
+    pen_unk = pen_none // 2                # unconfirmed guess: half the confidence
+    def _sc(ub, pen):
+        base = deal_score(max(ub, 0.0), cfg["payout_pct"], cfg["trap_under_pct"])
+        if ag_mode in ("prefer", "require") and not is_trap:
+            base = max(0, base - pen)
+        return max(0, base - mat_pen) if not is_trap else base
+
+    # candidate ways to buy this: (state, cost, score penalty, fee paid)
+    if ag_mode == "off":
+        opts = [("off", base_cost, 0, 0.0)]
+    elif ag_state == "included":
+        opts = [("included", base_cost, 0, 0.0)]
+    elif ag_state in ("optional", "unknown"):
+        opts = [(ag_state, base_cost + ag_fee * tax,
+                 0 if ag_state == "optional" else pen_unk, ag_fee)]
+        if ag_mode != "require":           # buying it unprotected is still on the table
+            opts.append(("none", base_cost, pen_none, 0.0))
+    else:                                  # no authentication available at any price
+        if ag_mode == "require":
+            return None
+        opts = [("none", base_cost, pen_none, 0.0)]
+
+    best = None
+    for st, c, pen, fee in opts:
+        ub = (page_per_g - c / grams) / page_per_g
+        cand = (_sc(ub, pen), st, c, ub, fee)
+        # tie-break on real margin: when two ways of buying score the same (both
+        # floored at 0, say), present the one that actually leaves money on the table
+        if best is None or (cand[0], cand[3]) > (best[0], best[3]):
+            best = cand
+    score, buy_state, cost, under_by, charge_ag = best
     all_in_g = cost / grams
-    if all_in_g >= page_per_g:
-        return None
-    under_by = (page_per_g - all_in_g) / page_per_g
+    # true when paying for the guarantee would wipe out the margin, i.e. this is only
+    # a deal if you're willing to take it unauthenticated
+    ag_fee_kills_margin = (ag_state in ("optional", "unknown") and ag_fee > 0
+                           and (page_per_g - (base_cost + ag_fee * tax) / grams) <= 0)
 
     title = title_text or item.get("title", "")
-    is_trap = under_by >= cfg["trap_under_pct"]
     reason = ""
     if karat == 24 and BAR_RE.search(title):    # 24k "bullion" under melt is almost always fake
         is_trap = True
@@ -869,18 +1333,18 @@ def evaluate_core(item, karat, grams, spot24, cfg, title_text=None, photos=None,
     elif is_trap:
         # discount this deep past melt isn't a real deal; explain the most likely cause
         if PLATED_RE.search(title):
-            reason = (f"{round(under_by*100)}% under melt and the title shows plating shorthand "
+            reason = (f"{round(raw_under_by*100)}% under melt and the title shows plating shorthand "
                       f"— the weight is base metal with a thin gold layer, not solid gold")
-        elif under_by >= 0.85:
-            reason = (f"{round(under_by*100)}% under melt — that's not a discount, the weight "
+        elif raw_under_by >= 0.85:
+            reason = (f"{round(raw_under_by*100)}% under melt — that's not a discount, the weight "
                       f"is real but the metal almost certainly isn't solid gold (plated/filled)")
         else:
-            reason = (f"{round(under_by*100)}% under melt — too far below spot to be a genuine "
+            reason = (f"{round(raw_under_by*100)}% under melt — too far below spot to be a genuine "
                       f"deal; likely wrong karat, inflated weight, or a non-gold core")
     # soft flag: a steep-but-not-trap discount is the kind most often caused by a
     # wrong/total weight, so prompt a closer look without hiding it
     mixed = bool(mixed_karats and len(mixed_karats) > 1)
-    verify = (not is_trap) and (under_by >= 0.40 or mixed)
+    verify = (not is_trap) and (raw_under_by >= 0.40 or mixed)
 
     if photos is None:
         # additionalImages is the real gallery count; thumbnailImages is ~always a
@@ -920,28 +1384,59 @@ def evaluate_core(item, karat, grams, spot24, cfg, title_text=None, photos=None,
             why.append("99%+ feedback")
         if photos >= 5:
             why.append(f"well documented ({photos} photos)")
-        if 0.05 <= under_by <= 0.35:
+        if 0.05 <= raw_under_by <= 0.35:
             why.append("believable margin, not too-good")
+        if ag_state == "included":
+            why.insert(0, "eBay authenticates this before it ships")
+        elif ag_state == "optional" and ag_confirmed:
+            why.insert(0, f"authentication can be added for ${ag_fee:.0f}")
     deal_why = ", ".join(why[:3])
 
+
+
     return {
-        "score": deal_score(under_by, cfg["payout_pct"], cfg["trap_under_pct"]),
+        "score": score,
+        # Score on melt alone, before any authentication penalty. Needed because the
+        # penalty must never gate the detail call that would REMOVE the penalty: using
+        # the penalised score to decide what's worth confirming is a deadlock — the
+        # listing is docked for being unconfirmed, the docking drops it under the
+        # confirmation floor, so it stays unconfirmed forever.
+        "melt_score": deal_score(raw_under_by, cfg["payout_pct"], cfg["trap_under_pct"]),
         "under_pct": round(under_by * 100, 1),
+        "raw_under_pct": round(raw_under_by * 100, 1),
         "trap": is_trap, "trap_reason": reason, "deal_why": deal_why,
         "verify": verify, "gold_wt": gold_specific, "auth_guaranteed": ag,
+        # AG block: state drives the badge, ag_fee drives the maths, ag_confirmed says
+        # whether this is eBay's word or our price-band guess. The UI must show the
+        # difference — an unconfirmed guess is not a guarantee.
+        # Material grade: "clear" or "suspect". A suspect is a listing we chose to show
+        # you rather than throw away on a guess — see material_verdict().
+        "material": mat["state"], "material_why": mat["reason"], "material_tags": mat["tags"],
+        "ag_state": ag_state, "ag_buy_as": buy_state, "ag_fee": round(charge_ag, 2),
+        "ag_fee_quoted": round(ag_fee, 2), "ag_confirmed": ag_confirmed,
+        "ag_fee_kills_margin": ag_fee_kills_margin,
         "mixed_lot": mixed, "mixed_note": mixed_note,
         "offer": "BEST_OFFER" in (item.get("buyingOptions") or []),
         "seller_pct": s_pct, "seller_score": s_score, "seller_user": seller.get("username", ""), "photos": photos,
         "id": item.get("itemId", ""),
         "karat": f"{karat}K", "grams": grams, "price": round(price, 2), "ship": round(ship, 2),
         "all_in_per_g": round(all_in_g, 2), "page_per_g": round(page_per_g, 2),
+        "raw_all_in_per_g": round(raw_all_in_g, 2),
+        # net of the authentication fee when one has to be paid — this is the number
+        # that actually lands in your pocket, not the pre-fee melt spread
         "profit": round(payout - cost, 2),
+        "raw_profit": round(payout - base_cost, 2),
         "title": title[:110], "url": item.get("itemWebUrl", ""),
         "listed": item.get("itemCreationDate", ""),
     }
 
 
-def evaluate(item, spot24, cfg):
+def evaluate(item, spot24, cfg, detail=None):
+    """Title-only evaluation. `detail` is optional and carries ONLY the authentication
+    facts: it's passed when a getItem call has already confirmed AG status but the
+    deep-scan re-read couldn't recover a weight (no grams in the description). Without
+    it, a confirmed row would be re-priced down the unconfirmed path and end up wearing
+    a "guaranteed" badge over a score computed from a price-band guess."""
     title = item.get("title", "")
     if not is_solid_no_stones(title):
         return None
@@ -952,7 +1447,31 @@ def evaluate(item, spot24, cfg):
     if not karat or not grams:
         return None
     return evaluate_core(item, karat, grams, spot24, cfg,
-                         gold_specific=bool(gold_g), mixed_karats=ks)
+                         gold_specific=bool(gold_g), mixed_karats=ks, detail=detail)
+
+
+def deep_disqualifies(item, detail):
+    """Re-check materials against the full listing once a detail payload is in hand.
+
+    The fast path can only read the title, so a listing titled "14k Gold Ring 5g" whose
+    description says "with sterling silver band" passes every title filter there is.
+    Any time we've already paid for a getItem call (AG confirmation, weight recovery),
+    the description is sitting right there and the check costs nothing extra.
+
+    Returns a short reason string when the listing should be dropped, else None."""
+    if not detail:
+        return None
+    desc = strip_html(detail.get("description", ""))
+    aspects = " ".join(
+        f"{a.get('name','')}: {' '.join(a.get('values', []))}"
+        for a in (detail.get("localizedAspects") or [])
+    )
+    blob = f"{item.get('title','')} {aspects} {desc}"
+    # Same graded verdict as the title path, deliberately. Running the blunt check here
+    # would undo the grading: a chain kept as a suspect because its only other metal was
+    # a clasp would be killed by the description mentioning that same clasp again.
+    v = material_verdict(blob)
+    return v["reason"] if v["state"] == "blocked" else None
 
 
 def needs_description(item, cfg):
@@ -979,7 +1498,7 @@ def evaluate_deep(item, detail, spot24, cfg):
         return None
     # reject pieces whose item specifics name a second non-gold metal (two-tone
     # with silver/steel, base metal, etc.) — these inflate the weight with non-gold
-    if MIXED_METAL.search(aspects):
+    if has_mixed_metal(aspects):
         return None
     ks = karats_in_text(title) or karats_in_text(aspects)
     karat = min(ks) if ks else (karat_from_text(title) or karat_from_text(aspects))
@@ -991,7 +1510,8 @@ def evaluate_deep(item, detail, spot24, cfg):
         return None
     photos = 1 + len(detail.get("additionalImages") or [])
     return evaluate_core(item, karat, grams, spot24, cfg, title_text=title,
-                         photos=photos, gold_specific=bool(gold_g), mixed_karats=ks)
+                         photos=photos, gold_specific=bool(gold_g), mixed_karats=ks,
+                         detail=detail)
 
 
 def load_seen(path):
@@ -1130,6 +1650,14 @@ def collect(token, queries, spot24, cfg, sort, deep):
     # mid-priced bargain, and the newest list never shows an old underpriced one.
     sorts = sort if isinstance(sort, (list, tuple)) else [sort]
     rows, seen, candidates = [], set(), []
+    # Every listing we throw away on materials, with the reason and enough of the
+    # listing to judge it by eye. Without this, a filter that is too strict looks
+    # exactly like a quiet market: you can flag a bad listing that reaches the board,
+    # but you can never flag one that never arrived.
+    rejects = []
+    # itemId -> raw search item, so the AG confirmation pass below can re-price a row
+    # against its original listing without a second search call
+    by_id = {}
     for q in queries:
         for srt in sorts:
             print(f"Searching ({srt}): {q}")
@@ -1138,8 +1666,23 @@ def collect(token, queries, spot24, cfg, sort, deep):
                 if iid in seen:
                     continue
                 seen.add(iid)
+                mv = material_verdict(item.get("title", ""))
+                if mv["state"] == "blocked":
+                    # only worth reviewing if it would otherwise have been a deal:
+                    # a weightless or overpriced listing tells you nothing about the filter
+                    if len(rejects) < int(cfg.get("reject_sample_max", 120)):
+                        pr = float((item.get("price") or {}).get("value", 0) or 0)
+                        rejects.append({
+                            "id": iid, "title": item.get("title", "")[:110],
+                            "url": item.get("itemWebUrl", ""), "price": round(pr, 2),
+                            "query": q, "reason": mv["reason"], "tags": mv["tags"],
+                            "grams": extract_grams(item.get("title", "")),
+                            "karat": karat_from_text(item.get("title", "")),
+                        })
+                    continue
                 row = evaluate(item, spot24, cfg)
                 if row:
+                    by_id[iid] = item
                     row["query"] = q
                     _apply_trust(row, cfg)
                     rows.append(row)
@@ -1147,9 +1690,91 @@ def collect(token, queries, spot24, cfg, sort, deep):
                     item["_src_query"] = q
                     candidates.append(item)
 
-    if deep and cfg["deep_scan"] and candidates:
+    # The detail-call budget buys two different things, so split it explicitly rather
+    # than letting whichever pass runs first eat the lot:
+    #   1. AG confirmation - turn a price-band guess into eBay's actual answer about
+    #      whether authentication is purchasable, and for how much
+    #   2. weight recovery - pull grams out of descriptions for listings whose title
+    #      never stated a weight
+    total_cap = int(cfg["max_detail_calls"])
+    dropped_deep = []          # listings the description disqualified after a detail call
+    ag_cap = int(total_cap * float(cfg.get("ag_detail_share", 0.5))) if cfg.get("ag_mode") != "off" else 0
+    used = 0
+    ratelimited = False
+
+    if ag_cap and rows:
+        # Only worth confirming where the answer could change a decision: unresolved
+        # AG status, not already a trap, and scoring well enough that you'd act on it.
+        floor = int(cfg.get("ag_confirm_min_score", 45))
+        # Gate on melt_score, not score: see the note on melt_score in evaluate_core.
+        pend = [r for r in rows
+                if not r.get("ag_confirmed") and not r.get("trap")
+                and r.get("ag_state") in ("unknown", "none")
+                and (r.get("melt_score") or r.get("score") or 0) >= floor]
+        pend.sort(key=lambda r: -(r.get("melt_score") or r.get("score") or 0))
+        if pend:
+            print(f"Confirming Authenticity Guarantee on {min(ag_cap, len(pend))} "
+                  f"of {len(pend)} unresolved listing(s)")
+        confirmed_ag = 0
+        for r in pend[:ag_cap]:
+            item = by_id.get(r.get("id"))
+            if not item:
+                continue
+            detail = get_item_detail(token, r.get("id"))
+            used += 1
+            if detail == "RATELIMIT":
+                print("  ! eBay rate limit hit, stopping AG confirmation")
+                ratelimited = True; break
+            if not detail:
+                continue
+            state, fee, _ = ag_status(item, cfg, detail=detail)
+            if state in ("included", "optional"):
+                confirmed_ag += 1
+            # Re-price the row now the fee is known for certain. Re-running the whole
+            # evaluation keeps one definition of the maths instead of duplicating it.
+            # Now that the full listing is in hand, re-check what the title couldn't
+            # show. Doing this BEFORE the fallback matters: evaluate_deep returns None
+            # both when the listing is disqualified AND when it simply has no weight in
+            # the description, and falling back on the first case would re-admit a row
+            # the description just told us to drop.
+            why = deep_disqualifies(item, detail)
+            # Log how each suspect resolved. Over enough sweeps this says whether a tag
+            # like "component_metal" is mostly fine or mostly junk — the number needed
+            # to tune the filter deliberately instead of by feel.
+            for t in (r.get("material_tags") or []):
+                bucket = cfg.setdefault("_suspect_outcomes", {}).setdefault(
+                    t, {"kept": 0, "dropped": 0})
+                bucket["dropped" if why else "kept"] += 1
+            if why:
+                print(f"  - dropped {r.get('id')}: {why}")
+                dropped_deep.append({"id": r.get("id"), "query": r.get("query", ""),
+                                     "title": r.get("title", ""), "reason": why})
+                rows[rows.index(r)] = None
+                continue
+            # Re-price against the confirmed facts. The deep read can still legitimately
+            # fail (no weight stated anywhere), so the fallback must be handed `detail`
+            # — otherwise the row keeps guess-based economics while claiming confirmed
+            # status.
+            idx = rows.index(r)
+            fresh = (evaluate_deep(item, detail, spot24, cfg)
+                     or evaluate(item, spot24, cfg, detail=detail))
+            if fresh:
+                fresh["query"] = r.get("query", "")
+                _apply_trust(fresh, cfg)
+                rows[idx] = fresh
+            else:
+                # couldn't re-price at all: keep the old row but don't let it advertise
+                # a confirmation its numbers never used
+                r["ag_confirmed"] = False
+            time.sleep(0.1)
+        rows[:] = [r for r in rows if r is not None]
+        print(f"  {confirmed_ag} listing(s) confirmed buyable with authentication"
+              + (f" · {len(dropped_deep)} dropped on material re-check" if dropped_deep else ""))
+        cfg.setdefault("_deep_drops", []).extend(dropped_deep)
+
+    if deep and cfg["deep_scan"] and candidates and not ratelimited:
         candidates.sort(key=lambda it: float((it.get("price") or {}).get("value", 1e9) or 1e9))
-        cap = cfg["max_detail_calls"]
+        cap = max(0, total_cap - used)
         print(f"Deep-scanning {min(cap, len(candidates))} of {len(candidates)} weightless listings")
         recovered = 0
         for item in candidates[:cap]:
@@ -1165,6 +1790,21 @@ def collect(token, queries, spot24, cfg, sort, deep):
                 rows.append(row); recovered += 1
             time.sleep(0.1)
         print(f"  recovered {recovered} extra deal(s) from descriptions")
+    # Rank rejects by how much they'd have been worth if the filter was wrong, so the
+    # review pile leads with the ones where a mistake actually cost you money.
+    for rj in rejects:
+        g, k = rj.get("grams"), rj.get("karat")
+        rj["would_be_melt"] = round(PURITY[k] * spot24 * g, 2) if (g and k in PURITY) else None
+        rj["would_be_under_pct"] = (
+            round((rj["would_be_melt"] - rj["price"]) / rj["would_be_melt"] * 100, 1)
+            if rj["would_be_melt"] and rj["price"] and rj["would_be_melt"] > 0 else None)
+    rejects.sort(key=lambda r: -(r.get("would_be_under_pct") or -999))
+    cfg.setdefault("_rejects", []).extend(rejects)
+    if rejects:
+        from collections import Counter
+        by = Counter(t for r in rejects for t in r["tags"])
+        print(f"  filtered out {len(rejects)} listing(s) on materials: "
+              + ", ".join(f"{k}×{v}" for k, v in by.most_common()))
     return rows
 
 
@@ -1256,6 +1896,32 @@ def main():
                    priority="high")
     zero_streak = (int(prev.get("zero_streak") or 0) + 1) if carried_from else 0
 
+    # ---- ended listings, tracked engine-side ----
+    # This used to be derived purely in the browser by diffing localStorage across
+    # visits, which meant the Dead Listings tab was empty on any device that hadn't
+    # personally watched a listing disappear — a fresh browser, a phone, or after a
+    # storage clear. Computing it here makes it real data that travels with the site.
+    ended = list(prev.get("ended") or [])
+    if not carried_from:
+        cur_ids = {r["id"] for r in deals + traps if r.get("id")}
+        known = {e.get("id") for e in ended}
+        now_iso = datetime.now(timezone.utc).isoformat()
+        for row in (prev.get("deals") or []) + (prev.get("traps") or []):
+            rid = row.get("id")
+            if rid and rid not in cur_ids and rid not in known:
+                ended.append({**row, "ended_at": now_iso})
+                known.add(rid)
+        # a listing that came back (relisted, or a sweep that missed it) isn't dead
+        ended = [e for e in ended if e.get("id") not in cur_ids]
+        keep_days = int(CONFIG.get("ended_keep_days", 14))
+        cutoff = datetime.now(timezone.utc) - timedelta(days=keep_days)
+        def _fresh(e):
+            try:
+                return datetime.fromisoformat(e.get("ended_at", "")) >= cutoff
+            except Exception:
+                return True
+        ended = [e for e in ended if _fresh(e)][-400:]
+
     # attach prev_price so the dashboard can show "was $X → now $Y"
     if not carried_from:
         for row in deals + traps:
@@ -1292,11 +1958,28 @@ def main():
         # mirror of an engine default. If a knob changes here, the UI follows on the
         # next sweep with nothing to keep in sync by hand.
         "config_echo": {k: CONFIG.get(k) for k in (
-            "strong_score", "max_revives", "retire_min_runs", "retire_score_at",
+            "strong_score", "max_revives", "retire_min_runs",
             "alert_min_score", "query_weights", "query_prior_runs", "reserve_runs",
             "payout_pct", "trap_under_pct", "explore_frac", "daily_call_budget",
             "promote_min_deals", "fb_weight_span", "history_max", "runs_per_day",
-            "starvation_cap", "exploit_share", "min_feedback_pct")},
+            "starvation_cap", "exploit_share", "min_feedback_pct",
+            "retire_rel_median", "retire_batch_cap", "retire_min_live",
+            "retire_protect_liked", "ended_keep_days",
+            "ag_mode", "ag_fee", "ag_optional_min", "ag_optional_max",
+            "ag_required_min", "ag_score_penalty", "ag_confirm_min_score",
+            "ag_detail_share", "max_detail_calls",
+            "suspect_score_penalty", "reject_sample_max")},
+        # AG rollup so the dashboard can headline "how much of today's board is
+        # actually protected" without recomputing it from every row
+        "ag_summary": {
+            "included":  sum(1 for d in deals if d.get("ag_state") == "included"),
+            "optional":  sum(1 for d in deals if d.get("ag_state") == "optional"),
+            "none":      sum(1 for d in deals if d.get("ag_state") == "none"),
+            "unknown":   sum(1 for d in deals if d.get("ag_state") == "unknown"),
+            "confirmed": sum(1 for d in deals if d.get("ag_confirmed")),
+        },
+        "manual_run": {"id": qstats["meta"].get("manual_run_done"),
+                       "at": qstats["meta"].get("manual_run_at")},
         "query_perf": {q: {"runs": s.get("runs", 0), "deals": s.get("deals", 0),
                            "traps": s.get("traps", 0), "strong": s.get("strong", 0),
                            "strong_ag": s.get("strong_ag", 0), "weak": s.get("weak", 0),
@@ -1314,6 +1997,28 @@ def main():
             "min_feedback_pct": CONFIG["min_feedback_pct"],
             "alert_min_score": ALERT["min_score"], "queries": CONFIG["queries"],
         },
+        # The review pile: what the material filter threw away this sweep, worst-loss
+        # first, plus how the surviving listings graded. Together these are the only
+        # way to see BOTH kinds of error — a bad listing that got through is on your
+        # board, a good one that didn't is in here.
+        "rejects": sorted(CONFIG.get("_rejects") or [],
+                          key=lambda r: -(r.get("would_be_under_pct") or -999))[:120],
+        "rejects_count": len(CONFIG.get("_rejects") or []),
+        "material_summary": {
+            "clear":   sum(1 for d in deals if d.get("material") == "clear"),
+            "suspect": sum(1 for d in deals if d.get("material") == "suspect"),
+            "rejected": len(CONFIG.get("_rejects") or []),
+            "reject_tags": dict(__import__("collections").Counter(
+                t for r in (CONFIG.get("_rejects") or []) for t in r.get("tags", []))),
+            "suspect_tags": dict(__import__("collections").Counter(
+                t for d in deals for t in (d.get("material_tags") or []))),
+            # how suspects resolved once a detail call could settle them
+            "suspect_outcomes": CONFIG.get("_suspect_outcomes", {}),
+        },
+        "defects": (lambda d: {"total": d.get("total", 0),
+                               "by_category": d.get("by_category", {}),
+                               "engine_drop_reasons": d.get("engine_drop_reasons", {})})(
+            build_defect_backlog(CONFIG, CONFIG.get("_deep_drops"))),
         "learning": {
             "feedback_events": n_fb,
             "sellers_blocked": sorted(sblock),
@@ -1321,6 +2026,8 @@ def main():
             "promoted": promoted, "retired": retired,
             "sorts": sorts,
         },
+        "ended": ended,
+        "ended_count": len(ended),
         "carried_from": carried_from,
         "api_errors": dict(API_ERRORS),
         "quota": {

@@ -125,7 +125,18 @@
   .tag.tr { background:rgba(110,231,183,.18); color:#6ee7b7; }
   .tag.n { background:rgba(52,211,153,.18); color:#34d399; }
   .tag.g { background:rgba(96,165,250,.15); color:#60a5fa; }
-  .tag.ag { background:rgba(59,130,246,.18); color:#93c5fd; }
+  .runwrap { border:1px solid rgba(212,175,55,.35); background:rgba(212,175,55,.04);
+             border-radius:10px; padding:14px; margin-bottom:16px; }
+  .tag.ag    { background:rgba(59,130,246,.18); color:#93c5fd; }
+  .tag.agopt { background:rgba(139,92,246,.18); color:#c4b5fd; }
+  .tag.sus   { background:rgba(251,191,36,.16); color:#fcd34d; }
+  .rj { display:flex; gap:10px; align-items:baseline; padding:7px 9px; margin-bottom:5px;
+        border:1px solid rgba(255,255,255,.07); border-radius:7px; font-size:12px; }
+  .rj .t { flex:1; color:#d4d4d4; }
+  .rj .w { color:#fcd34d; white-space:nowrap; }
+  .rj .r { color:#737373; font-size:11px; }
+  .tag.agunk { background:rgba(115,115,115,.18); color:#a3a3a3; border:1px dashed rgba(163,163,163,.35); }
+  .tag.agno  { background:rgba(244,63,94,.14);  color:#fda4af; }
   .empty { border:1px solid #2a2210; background:rgba(20,17,5,.4); border-radius:10px;
            padding:24px; text-align:center; font-size:14px; color:#737373; }
   .foot { font-size:11px; line-height:1.6; color:#525252; margin-top:18px; }
@@ -308,7 +319,7 @@ const F = Object.assign({karat:"All",minScore:0,minProfit:0,showTraps:false,
   hideSeen:false,showHidden:false,settingsOpen:false,
   sortBy:"score",   // "score" | "profit" | "age" | "pricedrop"
   showTrends:true, showPrices:true, showEnded:true, showQueries:true, fbOpen:null,
-  trapMode:"hide", agMode:"all", mixedMode:"all", tab:"listings",
+  trapMode:"hide", agMode:"all", mixedMode:"all", matMode:"all", tab:"listings", runOpen:false,
   chartRange:"all", priceUnit:"oz", dealsMode:"total", trendMetric:"under", queryMetric:"deals"}, ui.F||{});
 const saveUI = ()=>{ ui.F=Object.assign({},F,{fbOpen:null}); LS.set("gdd_ui",ui); };
 
@@ -338,11 +349,19 @@ let FB = LS.get("gdd_fb", {});               // id -> {verdict, category, ts, qu
 let FB_PENDING = LS.get("gdd_fb_pending", []); // events not yet committed to the repo
 // [key, label, what this reason actually penalises — shown in the popup so the
 // effect of each tap is never a mystery]
+// The four "our filter missed it" reasons deliberately do NOT penalise the search
+// term. The term asked eBay for solid gold by weight and got it; if we then failed to
+// spot the plating, the stones, the second metal or a misread weight, that's our bug,
+// and retiring the term for it would hide the bug behind a plausible-looking number.
+// Those taps go to the parsing backlog instead. Only "not what I searched for" says
+// the term itself is fetching the wrong kind of thing.
 const FB_CATS = [
-  ["plated",       "Not solid gold — plated or filled",  "penalises this search term and the seller"],
-  ["weight_karat", "Weight or karat was wrong",          "penalises this search term"],
-  ["stones",       "Stones or mixed materials",          "penalises this search term"],
-  ["lot",          "Junk lot / not what I searched for", "penalises this search term"],
+  ["plated",       "Not solid gold — plated or filled",  "filter miss → parsing backlog · flags the seller"],
+  ["weight_karat", "Weight or karat was wrong",          "filter miss → parsing backlog, term not penalised"],
+  ["stones",       "Has stones",                         "filter miss → parsing backlog, term not penalised"],
+  ["mixed",        "Mixed materials / second metal",     "filter miss → parsing backlog, term not penalised"],
+  ["irrelevant",   "Not what I searched for at all",     "penalises this search term"],
+  ["lot",          "Junk lot",                           "partly penalises this search term"],
   ["seller",       "Sketchy seller",                     "penalises the seller only"],
   ["overpriced",   "Real, but not profitable",           "recorded only — pricing, not a bad search"],
   ["style",        "Not my style",                       "recorded only — taste is never punished"],
@@ -521,9 +540,43 @@ function triState(key,label){
   return `<div class="fgroup"><span class="flabel">${label}</span>${
     TRI.map(([v,l])=>`<button class="chip ${F[key]===v?"on":""}" onclick="setF('${key}','${v}')">${l}</button>`).join("")}</div>`;
 }
+// Authenticity Guarantee has four states, and the difference between them is money.
+// "included" is free protection eBay pays for. "optional" is protection you can buy
+// at checkout for a fee that has already been charged into this listing's score.
+// "none" means no protection is purchasable at any price. "unknown" is our own guess
+// from the price band, NOT eBay's word — it is deliberately styled and labelled as
+// unconfirmed, because treating a guess as a guarantee is the exact mistake this
+// whole feature exists to prevent.
+function agInfo(x){
+  const st=x.ag_state||(x.auth_guaranteed?"included":"none");
+  const fee=x.ag_fee_quoted||x.ag_fee||0;
+  if(st==="included") return {k:"included",cls:"ag",txt:"🛡 guaranteed · free",
+    tip:"eBay authenticates this before it ships, at no cost to you."};
+  if(st==="optional")  return {k:"optional",cls:"agopt",txt:`🛡 +${fmt(fee)} to guarantee`,
+    tip:`You can add eBay authentication at checkout for ${fmt(fee)}. That fee is already charged into the score and profit shown.`};
+  if(st==="unknown")   return {k:"unknown",cls:"agunk",txt:"🛡? guarantee unconfirmed",
+    tip:`This listing's price falls in eBay's optional-authentication band, so protection is probably available for about ${fmt(fee)} — but eBay hasn't confirmed it. Only a detail call can confirm, and this one hasn't had one yet. Treat it as unprotected until confirmed.`};
+  return {k:"none",cls:"agno",txt:"⚠ no guarantee available",
+    tip:"eBay offers no authentication for this listing at any price. If it isn't solid gold, you carry the whole loss."};
+}
+function matInfo(x){
+  if(x.material!=="suspect") return null;
+  const L={component_metal:"⚠ another metal, on a small part",
+           tone_ambiguous:"⚠ two-tone — colours or metals?",
+           stone_accent:"⚠ accent stones"};
+  return {txt:(x.material_tags||[]).map(t=>L[t]||t).join(" · ")||"⚠ check materials",
+          tip:x.material_why||"Materials need a look before you commit."};
+}
 function passTraits(x){
   const m=(mode,has)=> mode==="all" || (mode==="only"&&has) || (mode==="hide"&&!has);
-  return m(F.trapMode,!!x.trap) && m(F.agMode,!!x.auth_guaranteed) && m(F.mixedMode,!!x.mixed_lot);
+  // "only" now means genuinely protected — free OR buyable. An unconfirmed guess does
+  // not count as protected, which is the whole point of tracking the distinction.
+  const k=agInfo(x).k, prot=(k==="included"||k==="optional");
+  const agOk = F.agMode==="all" || (F.agMode==="only"&&prot) || (F.agMode==="hide"&&!prot)
+            || (F.agMode==="free"&&k==="included");
+  const sus = x.material==="suspect";
+  const matOk = F.matMode==="all" || (F.matMode==="only"&&sus) || (F.matMode==="hide"&&!sus);
+  return m(F.trapMode,!!x.trap) && agOk && matOk && m(F.mixedMode,!!x.mixed_lot);
 }
 // Searches the engine dropped, newest-worst first. Reads the same query_perf the
 // Data tab charts, so there's one source of truth for how a term is doing.
@@ -727,7 +780,15 @@ function render(){
     :              {c:"#fb7185",l:"down"};
 
   // recently ended (sold) pile — most recently gone first
-  const endedArr=Object.entries(ENDED).map(([id,r])=>({...r.snap,_endedTs:r.endedTs}))
+  // Ended listings come from two places and get merged. The engine now diffs each
+  // sweep against the previous one and ships an `ended` array in results.json, which
+  // is what makes this tab work on a phone or a fresh browser. The local ENDED map is
+  // still folded in so anything this device watched disappear between sweeps survives.
+  const endedMap={};
+  (DATA.ended||[]).forEach(e=>{ if(e&&e.id) endedMap[e.id]={...e,_endedTs:Date.parse(e.ended_at)||0}; });
+  Object.entries(ENDED).forEach(([id,r])=>{ if(!endedMap[id]) endedMap[id]={...r.snap,_endedTs:r.endedTs}; });
+  const liveIds=new Set(DATA.deals.concat(DATA.traps||[]).map(x=>x.id));
+  const endedArr=Object.values(endedMap).filter(x=>!liveIds.has(x.id))
                  .sort((a,b)=>b._endedTs-a._endedTs);
   const ENDED_SHOW=40;
 
@@ -736,7 +797,7 @@ function render(){
       <div><h1><span class="dot"></span>GOLD DEAL DESK</h1>
         <div class="sub">Solid US gold · your filters · under today's price</div></div>
       <div style="text-align:right">
-        <button class="btn sm" onclick="runNow()" style="margin-bottom:6px">⚡ run now</button>
+        <button class="btn sm" onclick="openRunDrawer()" style="margin-bottom:6px">⚡ run…</button>
         <button class="hbtn" onclick="load()">↻ refresh</button>
         <div class="lastrun">last run: <span id="lr">${lastRunStr()}</span></div>
         <div class="next">next ~<span id="cd">${countdownStr()}</span></div>
@@ -744,14 +805,68 @@ function render(){
         ${d.quota?(()=>{const pace=d.quota.est_calls_run*d.quota.runs_per_day_est, pct=pace/d.quota.daily_budget,
           qc=pct>1?"#fb7185":pct>0.9?"#fcd34d":"#34d399";
           return `<div class="next" style="margin-top:2px" title="Estimated eBay API usage at the current cadence vs your daily budget. ${d.api_errors&&d.api_errors.quota?d.api_errors.quota+' quota (429) errors last run!':''}">quota <span style="color:${qc}">~${pace.toLocaleString()}/${d.quota.daily_budget.toLocaleString()} calls/day</span>${d.api_errors&&d.api_errors.count?` · <span style="color:#fb7185">${d.api_errors.count} API error(s) last run</span>`:""}</div>`})():""}
-        <div id="runmsg" class="note" style="text-align:right"></div></div>
+        <div class="note runmsg" style="text-align:right"></div></div>
     </header>
+
+    ${F.runOpen?(()=>{
+      const sel=RUNPICK||[], bench=benchTerms(), slots=runSlots();
+      const perf=(DATA.query_perf)||{};
+      const line=(q,src)=>{
+        const st=perf[q]||{}, on=sel.includes(q);
+        const rate=st.runs?((st.deals||0)/st.runs).toFixed(2)+"/run":"untried";
+        const ag=st.ag?` · ${st.ag} AG`:"";
+        return `<div class="rt ${on?"revived":""}">
+          <div class="q">${esc(q)}${src?`<span class="qbadge ex">${src}</span>`:""}</div>
+          <div class="why">${rate}${st.traps?` · ${st.traps} traps`:""}${ag}${st.score!=null?` · score ${st.score}`:""}</div>
+          <button class="chip ${on?"on":""}" onclick="runToggle('${esc(q).replace(/'/g,"\\'")}')">${on?"in ✓":"add"}</button>
+        </div>`;};
+      return `<div class="runwrap">
+        <div class="sec-hdr" style="cursor:default">
+          <div class="label">Run the scout${sel.length!==slots?` · ${sel.length} selected`:""}</div>
+          <span class="sec-toggle" onclick="closeRunDrawer()">✕ close</span>
+        </div>
+        <div class="note" style="margin:2px 0 10px;color:#737373">
+          This is what the next sweep would run, ranked the way the engine ranks them:
+          pinned first, then points-per-run. ${
+            slots>=(RUNPICK||[]).length
+              ? `Your budget covers about ${slots} slots, comfortably more than the ${(RUNPICK||[]).length} live terms you have — so nothing is being crowded out, and adding a few more costs you nothing.`
+              : `Your budget covers about ${slots} slots, so only the top ${slots} run.`}
+          Swapping terms below applies to <b>this run only</b>; the next scheduled sweep
+          goes back to normal rotation.</div>
+        ${(()=>{
+          const est=(DATA.quota&&DATA.quota.runs_per_day_est)||0, set=CFG("runs_per_day",0);
+          if(set) return "";
+          // The slot budget is divided by how often the engine THINKS it runs. That
+          // figure is inferred from gaps in history.json and falls back to 48/day when
+          // the history is thin — which silently quarters your slots and is a very easy
+          // way to lose coverage without noticing.
+          const warn = est>=36;
+          return `<div class="note" style="margin:-4px 0 10px;color:${warn?"#fcd34d":"#525252"}">
+            ${warn?"⚠ ":""}Cadence is being auto-detected as <b>~${est} runs/day</b>, and your
+            per-run call budget is divided by it. ${warn
+              ? `That's the thin-history fallback, not a measurement. If your cron actually fires every 2 hours (12/day), the engine is rationing calls about ${(est/12).toFixed(0)}× too hard and most of your terms never run. Set "Runs per day" to 12 in Settings to pin it.`
+              : `Set "Runs per day" in Settings to pin it if your cron cadence is fixed.`}
+          </div>`;})()}
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
+          <button class="btn sm" onclick="runNow(null)">⚡ run as-is</button>
+          <button class="btn sm" onclick="runNow(RUNPICK)">▶ run these ${sel.length}</button>
+          <button class="hbtn" onclick="runReset()">↺ reset selection</button>
+        </div>
+        <div class="note runmsg" style="margin-bottom:10px"></div>
+        <div class="label" style="margin-bottom:6px">Running this sweep (${sel.length})</div>
+        ${sel.length?sel.map(q=>line(q,perf[q]&&perf[q].origin==="explore"?"explore":"")).join("")
+          :`<div class="empty">Nothing selected — add terms below, or run as-is.</div>`}
+        <div class="label" style="margin:14px 0 6px">Bench · retired terms and untried candidates (${bench.length})</div>
+        <div class="note" style="margin-bottom:8px;color:#525252">Adding a retired term here gives it a run without spending one of its ${CFG("max_revives",2)} revives.</div>
+        ${bench.length?bench.slice(0,40).map(([q,src])=>line(q,src)).join("")
+          :`<div class="empty">Nothing on the bench.</div>`}
+      </div>`;})():""}
 
     ${stale?`<div class="empty" style="margin-bottom:16px;border-color:rgba(244,63,94,.4);color:#fb7185;font-size:12px;padding:12px">⚠ Data is ${Math.round(ageMin/60)}h old — the scanner may have stalled. Hit ⚡ run now, or check the Actions log.</div>`:""}
 
     <nav class="tabs" role="tablist">
       ${[["listings","Listings", rest.length+saved.length],
-         ["dead","Dead Listings", Object.keys(ENDED).length + retiredTerms().length],
+         ["dead","Dead & Filtered", endedArr.length + retiredTerms().length + (DATA.rejects_count||0)],
          ["data","Data", null],
          ["settings","Settings", null]].map(([k,l,n])=>
         `<button class="tab ${F.tab===k?"on":""}" role="tab" aria-selected="${F.tab===k}"
@@ -774,6 +889,11 @@ function render(){
         <div class="v" style="color:#c4b5fd">${fbGoodN}<span style="font-size:.5em;color:#737373"> / </span><span style="color:#fb7185">${fbBadN}</span></div>
         <div class="k">rated good / bad</div></div>
       <div class="stat"><div class="v">${avgUnder}%</div><div class="k">avg under price</div></div>
+      ${(()=>{const a=DATA.ag_summary||{};
+        const prot=(a.included||0)+(a.optional||0);
+        return `<div class="stat" title="Listings you can buy with eBay authentication behind them — free (${a.included||0}) or purchasable (${a.optional||0}). ${a.unknown||0} unconfirmed, ${a.none||0} with no protection available.">
+          <div class="v" style="color:#93c5fd">${prot}<span style="font-size:.5em;color:#737373"> / ${d.deals.length}</span></div>
+          <div class="k">buyable guaranteed</div></div>`;})()}
     </div></section>
 
     <section class="cmd">
@@ -790,7 +910,15 @@ function render(){
       </div>
       <div class="cmd-grid">
         ${triState("trapMode","traps")}
-        ${triState("agMode","guaranteed")}
+        ${triState("matMode","materials iffy")}
+        <div class="fgroup"><span class="flabel">authentication</span>${
+          [["all","all"],["only","protected"],["free","free only"],["hide","unprotected"]].map(([v,l])=>
+            `<button class="chip ${F.agMode===v?"on":""}" title="${
+              v==="all"?"Show everything.":
+              v==="only"?"Only listings you can buy with a guarantee — free, or purchasable at checkout.":
+              v==="free"?"Only listings eBay authenticates at no cost to you (generally $500+).":
+              "Only listings with no authentication available — highest risk."
+            }" onclick="setF('agMode','${v}')">${l}</button>`).join("")}</div>
         ${triState("mixedMode","mixed lots")}
         <div class="fgroup"><span class="flabel">min score</span>
           <input type="range" min="0" max="100" step="5" value="${F.minScore}" oninput="setF('minScore',+this.value)">
@@ -812,14 +940,12 @@ function render(){
       ${saved.length?`<div class="pilehdr">★ Saved (${saved.length})</div>`+saved.map(dealRow).join(""):""}
       ${saved.length&&rest.length?`<div class="pilehdr" style="color:#a3a3a3">All listings</div>`:""}
       ${rest.length===0&&saved.length===0?`<div class="empty">Nothing matches these filters right now.</div>`:rest.map(dealRow).join("")}
-    </section>
-
-    ${endedArr.length?``:""}
+    </section>`:""}
 
     ${F.tab==="dead"?`
     <section>
       <div class="sec-hdr" onclick="setF('showEnded',!F.showEnded)">
-        <div class="label">Recently sold / ended · last ${ENDED_TTL_DAYS}d (${endedArr.length})</div>
+        <div class="label">Recently sold / ended · last ${CFG("ended_keep_days",ENDED_TTL_DAYS)}d (${endedArr.length})</div>
         <span class="sec-toggle">${F.showEnded?"▲ collapse":"▼ expand"}</span>
       </div>
       ${F.showEnded?`
@@ -827,12 +953,30 @@ function render(){
         ${endedArr.slice(0,ENDED_SHOW).map(endedRow).join("")}
         ${endedArr.length>ENDED_SHOW?`<div class="note" style="color:#525252;margin-top:6px">+${endedArr.length-ENDED_SHOW} older not shown</div>`:""}
       `:""}
-    </section>`:""}
+    </section>
 
-    
+    <section>
+      <div class="sec-hdr" onclick="setF('showRejects',!F.showRejects)">
+        <div class="label">Filtered out on materials · ${(DATA.rejects_count||0)} this sweep</div>
+        <span class="sec-toggle">${F.showRejects?"▲ collapse":"▼ review"}</span>
+      </div>
+      <div class="note" style="margin:2px 0 8px;color:#737373">The other half of the picture. A listing that reaches your board and turns out bad, you can flag — but one the filter rejected leaves no trace, so a filter that's too strict looks exactly like a quiet market. These are the rejects, ordered by how far under melt they'd have been <i>if the filter was wrong</i>, so the costliest mistakes sit at the top. Skim it now and then: if good listings are in here, tell me which pattern and I'll loosen that rule.</div>
+      ${F.showRejects?(()=>{
+        const rj=DATA.rejects||[];
+        if(!rj.length) return `<div class="empty">Nothing filtered out this sweep.</div>`;
+        const ms=(DATA.material_summary||{}).reject_tags||{};
+        return `<div class="note" style="margin-bottom:8px;color:#525252">${
+          Object.entries(ms).map(([k,v])=>`${esc(k)} × ${v}`).join(" · ")}</div>`
+        + rj.slice(0,60).map(r=>`<div class="rj">
+            <span class="w">${r.would_be_under_pct!=null?r.would_be_under_pct+"% under":"—"}</span>
+            <span class="t"><a class="link" href="${r.url}" target="_blank" rel="noopener">${esc(r.title)}</a>
+              <div class="r">${esc(r.reason)}${r.grams?` · ${r.grams}g`:""}${r.price?` · ${fmt(r.price)}`:""} · from "${esc(r.query)}"</div></span>
+          </div>`).join("");})():""}
+    </section>
+
     <section>
       <div class="label" style="margin-bottom:6px">Retired search terms</div>
-      <div class="note" style="margin-bottom:8px;color:#525252">Dropped automatically for not earning their slot — either they never found a real deal, or traps and 👎 outweighed what they brought back. Bringing one back wipes its record and gives it a clean trial; each term gets ${CFG("max_revives",2)} before it's done for good.</div>
+      <div class="note" style="margin-bottom:8px;color:#525252">Dropped for not earning their slot after at least ${CFG("retire_min_runs",20)} runs — either they never found a real deal, or they scored below ${Math.round(CFG("retire_rel_median",0.35)*100)}% of what the rest of the pool is managing. The bar is <b>relative</b>, so when gold spikes and every margin compresses, terms aren't culled for having a bad week. At most ${CFG("retire_batch_cap",2)} go per sweep and the pool never drops below ${CFG("retire_min_live",12)} live terms. Bringing one back wipes its record for a clean trial; each gets ${CFG("max_revives",2)} before it's done for good. To run one <i>without</i> spending a revive, add it from the ⚡ run drawer instead.</div>
       ${retiredTerms().length?retiredTerms().map(([q,s])=>{
         const revived=(REVIVED||[]).includes(q);
         const spent=(s.revives||0)>=CFG("max_revives",2);
@@ -846,11 +990,42 @@ function render(){
               : `<button class="chip" onclick="toggleRevive('${esc(q).replace(/'/g,"\\'")}')">bring back</button>`}
           <button class="iact xs ${isPinned(q)?"on":""}" title="pin: always run, never retire" onclick="toggleQuery('pin','${esc(q).replace(/'/g,"\\'")}')">★</button>
         </div>`;}).join("")
-      :`<div class="empty">Nothing retired yet. Terms start getting judged after ${CFG("retire_min_runs",8)} sweeps.</div>`}
+      :`<div class="empty">Nothing retired yet. Terms start getting judged after ${CFG("retire_min_runs",20)} sweeps.</div>`}
     </section>
 `:""}
 
-    ${F.tab==="data"?`${(()=>{ const QD=queryDealData(); return `
+    ${F.tab==="data"?`${(()=>{ const D=DATA.defects||{}; const bc=D.by_category||{};
+      const dr=D.engine_drop_reasons||{}; const tot=D.total||0;
+      const LBL={plated:"plated / filled slipped through",weight_karat:"weight or karat misread",
+                 stones:"stones slipped through",mixed:"mixed materials slipped through"};
+      return tot?`
+    <section>
+      <div class="label" style="margin-bottom:6px">Filter leaks · ${tot} logged</div>
+      <div class="note" style="margin-bottom:8px;color:#525252">Listings that reached the board when they shouldn't have — either you flagged them, or the engine caught them itself once it had the full listing. These are <b>our</b> defects, not bad search terms, so none of them push a term toward retirement. Nothing here edits a rule automatically; it's evidence for changing one deliberately.</div>
+      <div class="qwrap"><table class="qtable"><tr><th>leak</th><th>count</th><th>source</th></tr>
+      ${Object.entries(bc).map(([k,v])=>`<tr><td>${LBL[k]||k}</td><td>${v}</td><td>you flagged it</td></tr>`).join("")}
+      ${Object.entries(dr).map(([k,v])=>`<tr><td>${esc(k)}</td><td>${v}</td><td>engine caught it</td></tr>`).join("")}
+      </table></div>
+    </section>`:""; })()}
+    ${(()=>{ const M=DATA.material_summary||{}, so=M.suspect_outcomes||{};
+      const rows=Object.entries(so);
+      if(!rows.length && !M.suspect && !M.rejected) return "";
+      const LBL={component_metal:"another metal, on a small part",
+                 tone_ambiguous:"two/tri-tone (colours or metals?)",
+                 stone_accent:"accent stones"};
+      return `
+    <section>
+      <div class="label" style="margin-bottom:6px">Material filter · where it's drawing the line</div>
+      <div class="note" style="margin-bottom:8px;color:#525252">Listings whose materials were ambiguous are kept and marked rather than thrown away, then settled by a detail call when one gets spent on them. This is how those bets turned out. A tag that keeps almost everything is a rule that could be relaxed; one that drops almost everything is a rule worth making stricter. Change it deliberately in Settings — nothing here adjusts itself.</div>
+      <div class="qwrap"><table class="qtable">
+        <tr><th>ambiguous case</th><th>kept</th><th>dropped</th><th>held up</th></tr>
+        ${rows.map(([k,v])=>{const tot=(v.kept||0)+(v.dropped||0);
+          return `<tr><td>${LBL[k]||esc(k)}</td><td>${v.kept||0}</td><td>${v.dropped||0}</td>
+            <td>${tot?Math.round((v.kept||0)/tot*100)+"%":"—"}</td></tr>`;}).join("")}
+      </table></div>
+      <div class="note" style="margin-top:6px;color:#525252">This sweep: ${M.clear||0} clear · ${M.suspect||0} kept as uncertain · ${M.rejected||0} filtered out. The filtered ones are listed under <b>Dead &amp; Filtered</b> so a rule that's too strict can't hide as a quiet market.</div>
+    </section>`; })()}
+    ${(()=>{ const QD=queryDealData(); return `
     <section>
       <div class="sec-hdr" onclick="setF('showQueries',!F.showQueries)">
         <div class="label">Deals by search term · ${QD.rows.length} tracked${QSTATS&&QSTATS.meta?` · run ${QSTATS.meta.run_counter}`:""}</div>
@@ -953,7 +1128,22 @@ function render(){
         <label class="toggle"><input type="checkbox" id="s_explore" ${SET.explore_enabled!==false?"checked":""}> try new searches with spare budget</label>
         <div class="ctl"><span>Explore % of slots</span><input id="s_exfrac" type="number" step="1" min="0" max="50" value="${Math.round((SET.explore_frac??0.12)*100)}"></div>
         <div class="ctl"><span>Promote at N deals</span><input id="s_promote" type="number" step="1" value="${SET.promote_min_deals||3}"></div>
-        <div class="ctl"><span>Retire after N dry runs</span><input id="s_retire" type="number" step="1" value="${CFG("retire_min_runs",8)}"></div>
+        <div class="ctl"><span>Retire after N dry runs</span><input id="s_retire" type="number" step="1" value="${CFG("retire_min_runs",20)}"></div>
+        <div class="ctl" title="A term is retired when its points-per-run falls below this fraction of the live pool's median. Relative rather than fixed, so the bar tracks the market instead of culling everything whenever gold spikes and margins compress."><span>Retire below % of median</span><input id="s_relmed" type="number" step="5" min="0" max="100" value="${Math.round(CFG("retire_rel_median",0.35)*100)}"></div>
+        <div class="ctl" title="Most terms that can be retired in a single sweep. Stops one bad run gutting your coverage."><span>Max retired per run</span><input id="s_rbatch" type="number" step="1" min="0" value="${CFG("retire_batch_cap",2)}"></div>
+        <div class="ctl" title="Never retire below this many live terms, whatever the scores say."><span>Keep at least N terms live</span><input id="s_rfloor" type="number" step="1" min="1" value="${CFG("retire_min_live",12)}"></div>
+      </div>
+      <div class="label" style="margin:16px 0 6px">Authenticity Guarantee</div>
+      <div class="note" style="margin-bottom:8px;color:#525252">eBay authenticates jewelry at ${fmt(CFG("ag_required_min",500))}+ free of charge. Between ${fmt(CFG("ag_optional_min",200))} and ${fmt(CFG("ag_optional_max",499.99))} you can add it at checkout for a fee, which is charged into every score and profit figure on the board. Below that, no authentication is offered at any price.</div>
+      <div class="ctls">
+        <div class="ctl" title="prefer = show everything but rank protected listings higher · require = only surface listings you can buy with a guarantee (will cut volume hard, since most sub-$200 scrap has no AG at all) · off = ignore authentication entirely"><span>Mode</span>
+          <select id="s_agmode">${["prefer","require","off"].map(m=>
+            `<option value="${m}" ${CFG("ag_mode","prefer")===m?"selected":""}>${m}</option>`).join("")}</select></div>
+        <div class="ctl" title="The buyer-paid fee for optional authentication. Change it if eBay changes their pricing."><span>Add-on fee $</span><input id="s_agfee" type="number" step="1" value="${CFG("ag_fee",40)}"></div>
+        <div class="ctl" title="Score points deducted from a listing with no authentication available. Raise it to push unprotected listings further down the board."><span>No-guarantee penalty</span><input id="s_agpen" type="number" step="1" value="${CFG("ag_score_penalty",25)}"></div>
+        <div class="ctl" title="How far a listing is demoted when its materials are ambiguous but probably fine (a clasp in another metal, a two-tone piece). Set to 0 to rank them like any other listing; raise it to push them to the bottom without losing them."><span>Uncertain-materials penalty</span><input id="s_suspen" type="number" step="1" min="0" value="${CFG("suspect_score_penalty",8)}"></div>
+        <div class="ctl" title="How many filtered-out listings to keep for review each sweep. These are what the material filter rejected — the only way to notice a rule that's too strict."><span>Rejects kept for review</span><input id="s_rejmax" type="number" step="10" min="0" value="${CFG("reject_sample_max",120)}"></div>
+        <div class="ctl" title="Share of the detail-call budget spent confirming authentication status. eBay only reveals the optional add-on on a detail call, so confirming costs one call per listing."><span>Detail calls on AG %</span><input id="s_agshare" type="number" step="5" min="0" max="100" value="${Math.round(CFG("ag_detail_share",0.5)*100)}"></div>
       </div>
       <div class="ctl" style="margin-bottom:12px"><span>Your own candidate searches to try — one per line (explorer picks these first)</span>
         <textarea id="s_pool" style="min-height:50px">${(SET.explore_pool||[]).join("\n")}</textarea></div>
@@ -981,7 +1171,7 @@ function render(){
 `:""}
 <div id="fbmsg" class="note" style="margin:8px 0"></div>
 
-    <div class="foot">👍/👎 on any listing is the only thing that teaches the engine. 👍 boosts that search term and seller; 👎 opens a short "why?" prompt, and the reason decides what gets penalised — plated or wrong-weight hits push the <b>search term</b> down hard, a sketchy seller pushes the <b>seller</b> down, and "not profitable" or "not my style" are recorded but never punish anything, because those are pricing and taste rather than a bad search. Nothing you tap ever edits the scoring rules themselves; it only changes which searches get run and how they rank. Ratings commit to the repo a few seconds after you tap (needs the GitHub token below). ⚡ run now triggers an immediate sweep (≈2 min, then refresh). Click a listing to open it (marks it seen). ★ saves to the top pile, ✕ hides for good. Sellers you repeatedly rate good earn a ★ trusted badge and a small ranking bump. When a listing drops out of the feed it moves to <b>Recently sold / ended</b> for ${ENDED_TTL_DAYS} days. All triage is stored on this device. Stated weight and photos still need your eye before bidding.</div>`;
+    <div class="foot">👍/👎 on any listing is the only thing that teaches the engine. 👍 boosts that search term and seller; 👎 opens a short "why?" prompt, and the reason decides what gets penalised. Reasons that mean <i>our filter missed something</i> — plated, wrong weight, stones, mixed materials — do <b>not</b> penalise the search term: the term found a listing matching what you asked for, and the miss is ours to fix, so those taps go to the parsing backlog on the Data tab instead. Only "not what I searched for" pushes the <b>term</b> down; a sketchy seller pushes the <b>seller</b> down; "not profitable" and "not my style" are recorded but never punish anything. Nothing you tap ever edits the scoring rules themselves; it only changes which searches get run and how they rank. Ratings commit to the repo a few seconds after you tap (needs the GitHub token below). ⚡ run now triggers an immediate sweep (≈2 min, then refresh). Click a listing to open it (marks it seen). ★ saves to the top pile, ✕ hides for good. Sellers you repeatedly rate good earn a ★ trusted badge and a small ranking bump. When a listing drops out of the feed it moves to <b>Recently sold / ended</b> for ${ENDED_TTL_DAYS} days. All triage is stored on this device. Stated weight and photos still need your eye before bidding.</div>`;
 }
 
 function dealRow(x){
@@ -992,7 +1182,10 @@ function dealRow(x){
   if(saved)cls.push("saved"); if(fb&&fb.verdict==="bad")cls.push("rated-bad");
   const tags=[
     isNew?'<span class="tag n">new</span>':'',
-    x.auth_guaranteed?'<span class="tag ag">🛡 authenticity guarantee</span>':'',
+    (()=>{const a=agInfo(x);
+      return `<span class="tag ${a.cls}" title="${esc(a.tip)}">${a.txt}</span>`;})(),
+    (()=>{const mm=matInfo(x); return mm?`<span class="tag sus" title="${esc(mm.tip)}">${mm.txt}</span>`:"";})(),
+    x.ag_fee_kills_margin?'<span class="tag t" title="Paying for authentication would wipe out the entire margin on this listing, so it only works as an unguaranteed buy.">fee eats margin</span>':'',
     trusted?`<span class="tag tr">★ trusted seller (${TRUSTED[x.seller_user]})</span>`:'',
     x.trap?'<span class="tag t">trap</span>':'',
     x.verify?'<span class="tag v">verify wt</span>':'',
@@ -1041,7 +1234,7 @@ function endedRow(x){
       <div class="score" style="box-shadow:inset 0 0 0 1px ${st.c}55">
         <span class="n" style="color:${st.c}">${x.score}</span><span class="l">${st.l}</span></div>
       <div style="min-width:0;flex:1">
-        <div class="title">${x.title} <span class="tag">ended ${endedAge(x._endedTs)}</span>${x.auth_guaranteed?' <span class="tag ag">🛡 authenticity guarantee</span>':''}${SAVED.has(x.id)?' <span class="tag tr">★ was saved</span>':''}</div>
+        <div class="title">${x.title} <span class="tag">ended ${endedAge(x._endedTs)}</span>${(()=>{const a=agInfo(x);return ` <span class="tag ${a.cls}">${a.txt}</span>`;})()}${SAVED.has(x.id)?' <span class="tag tr">★ was saved</span>':''}</div>
         <div class="meta">
           <span class="wht">${x.karat} · ${x.grams}g</span>
           <span>${fmt(x.price)}${x.ship?` +${fmt(x.ship)} ship`:""}</span>
@@ -1071,14 +1264,77 @@ function copyLink(url,e){ e.stopPropagation(); e.preventDefault();
 }
 function setF(k,v){ F[k]=v; saveUI(); render(); }
 
-function rmsg(t,c){ const e=document.getElementById("runmsg"); if(e){e.textContent=t; e.style.color=c||"#737373";} }
-async function runNow(){
+// The run message appears in two places (header + drawer), so address them by class.
+// With a shared id, getElementById would only ever reach the header copy and every
+// message raised from inside the drawer would vanish.
+function rmsg(t,c){ document.querySelectorAll(".runmsg").forEach(e=>{
+  e.textContent=t; e.style.color=c||"#737373"; }); }
+
+// ---- run planner ----------------------------------------------------------
+// Mirrors the engine's own slot ranking so the drawer shows what would actually run,
+// not a guess. Anything the engine seats first (pinned, then starved) is seated first
+// here too; the rest rank by the same points-per-run score the engine publishes.
+function plannedQueries(){
+  const perf=(DATA.query_perf)||{}, disabled=new Set(DISABLED||[]);
+  const live=Object.entries(perf).filter(([q,s])=>
+    !disabled.has(q) && s.status!=="retired" && s.status!=="disabled");
+  const pin=[], rest=[];
+  live.forEach(e=>((PINNED||[]).includes(e[0])?pin:rest).push(e));
+  rest.sort((a,b)=>(b[1].score||0)-(a[1].score||0));
+  return {planned:pin.concat(rest), slots:runSlots()};
+}
+// Slot count from the same budget arithmetic the engine prints, using echoed config
+// so the two can't drift apart.
+function runSlots(){
+  const budget=CFG("daily_call_budget",4500), rpd=(DATA.quota&&DATA.quota.runs_per_day_est)||CFG("runs_per_day",12)||12;
+  const reserve=CFG("reserve_runs",2), detail=CFG("max_detail_calls",35);
+  const sorts=((DATA.learning&&DATA.learning.sorts)||["price"]).length||1;
+  return Math.max(4, Math.floor((budget/(rpd+reserve) - detail - 3)/(sorts*1)));
+}
+let RUNPICK=null;   // null = run as-is; array = hand-picked one-shot override
+function openRunDrawer(){
+  const {planned,slots}=plannedQueries();
+  RUNPICK=planned.slice(0,slots).map(([q])=>q);
+  F.runOpen=true; render();
+}
+function closeRunDrawer(){ F.runOpen=false; RUNPICK=null; render(); }
+function runToggle(q){
+  if(!RUNPICK) return;
+  const i=RUNPICK.indexOf(q);
+  if(i>=0) RUNPICK.splice(i,1); else RUNPICK.push(q);
+  render();
+}
+function runReset(){ const {planned,slots}=plannedQueries();
+  RUNPICK=planned.slice(0,slots).map(([q])=>q); render(); }
+
+// Terms you can swap in: everything the engine retired, plus your explore pool,
+// minus whatever's already selected.
+function benchTerms(){
+  const sel=new Set(RUNPICK||[]);
+  const ret=retiredTerms().map(([q,s])=>[q,"retired"]);
+  const pool=((SET&&SET.explore_pool)||[]).map(q=>[q,"explore pool"]);
+  const seen=new Set();
+  return ret.concat(pool).filter(([q])=>{
+    if(sel.has(q)||seen.has(q)) return false; seen.add(q); return true; });
+}
+
+async function runNow(picked){
   const owner=location.hostname.split(".")[0], repo=location.pathname.split("/").filter(Boolean)[0];
   const token=localStorage.getItem("gdd_token");
   if(!token){
-    // no token: open the Actions "Run workflow" page (one click there)
     window.open(`https://github.com/${owner}/${repo}/actions/workflows/scout.yml`,"_blank","noopener");
-    rmsg("opened Actions — click Run workflow there","#fcd34d"); return;
+    rmsg("no token saved — opened Actions, click Run workflow there","#fcd34d"); return;
+  }
+  // A hand-picked run is a one-shot override: write the terms + a fresh id into
+  // settings.json first, then dispatch. The engine consumes that id exactly once and
+  // goes straight back to normal rotation, so an ad-hoc sweep can't quietly become
+  // your permanent query list.
+  if(picked && picked.length){
+    const id=Date.now().toString(36)+Math.random().toString(36).slice(2,7);
+    SET=Object.assign({},SET||{},{manual_queries:picked,manual_run_id:id});
+    rmsg(`saving ${picked.length} hand-picked term(s)…`);
+    const ok=await saveSettingsRaw(SET);
+    if(!ok){ rmsg("couldn't save the term list — run not started","#fb7185"); return; }
   }
   const api=`https://api.github.com/repos/${owner}/${repo}/actions/workflows/scout.yml/dispatches`;
   rmsg("starting a run…");
@@ -1086,8 +1342,10 @@ async function runNow(){
     const r=await fetch(api,{method:"POST",
       headers:{Authorization:`Bearer ${token}`,Accept:"application/vnd.github+json"},
       body:JSON.stringify({ref:"main"})});
-    if(r.status===204) rmsg("run started — takes ~2 min, then refresh","#34d399");
-    else rmsg("couldn't start ("+r.status+"); token needs workflow scope","#fb7185");
+    if(r.status===204){ rmsg("run started — ~2 min, then refresh","#34d399"); F.runOpen=false; render(); }
+    else if(r.status===403||r.status===404)
+      rmsg(`couldn't start (${r.status}) — your token needs the "workflow" scope, not just public_repo`,"#fb7185");
+    else rmsg("couldn't start ("+r.status+")","#fb7185");
   }catch(e){ rmsg("run trigger failed; open Actions manually","#fb7185"); }
 }
 
@@ -1209,7 +1467,16 @@ function gatherSettings(){
     explore_frac:vp("s_exfrac","explore_frac",0.35),
     explore_pool:pool,
     promote_min_deals:v("s_promote","promote_min_deals",3),
-    retire_min_runs:v("s_retire","retire_min_runs",8),
+    retire_min_runs:v("s_retire","retire_min_runs",20),
+    retire_rel_median:vp("s_relmed","retire_rel_median",0.35),
+    retire_batch_cap:v("s_rbatch","retire_batch_cap",2),
+    retire_min_live:v("s_rfloor","retire_min_live",12),
+    ag_mode:(document.getElementById("s_agmode")||{}).value||CFG("ag_mode","prefer"),
+    ag_fee:v("s_agfee","ag_fee",40),
+    ag_score_penalty:v("s_agpen","ag_score_penalty",25),
+    ag_detail_share:vp("s_agshare","ag_detail_share",0.5),
+    suspect_score_penalty:v("s_suspen","suspect_score_penalty",8),
+    reject_sample_max:v("s_rejmax","reject_sample_max",120),
     fb_weight_span:vp("s_fbspan","fb_weight_span",0.15),
     runs_per_day:v("s_rpd","runs_per_day",0),
     history_max:v("s_histmax","history_max",10000),
@@ -1238,6 +1505,24 @@ async function saveSettings(quiet){
     say(put.ok?"saved — takes effect next run":"save failed ("+put.status+"); use Copy JSON","#"+(put.ok?"34d399":"fb7185"));
     return put.ok;
   }catch(e){ say("save error; use Copy JSON instead","#fb7185"); return false; }
+}
+// Commit a settings object straight to the repo. saveSettings() reads from the
+// Settings panel's inputs, which don't exist unless that tab is mounted — the run
+// drawer is reachable from every tab, so it needs a path that doesn't touch the DOM.
+async function saveSettingsRaw(obj){
+  const token=localStorage.getItem("gdd_token");
+  if(!token) return false;
+  const owner=location.hostname.split(".")[0], repo=location.pathname.split("/").filter(Boolean)[0];
+  if(!owner||!repo) return false;
+  const api=`https://api.github.com/repos/${owner}/${repo}/contents/settings.json`;
+  const hdr={Authorization:`Bearer ${token}`,Accept:"application/vnd.github+json"};
+  try{
+    let sha; const g=await fetch(api+"?ref=main",{headers:hdr}); if(g.ok) sha=(await g.json()).sha;
+    const put=await fetch(api,{method:"PUT",headers:hdr,body:JSON.stringify({
+      message:"one-shot run selection from dashboard",
+      content:btoa(unescape(encodeURIComponent(JSON.stringify(obj,null,2)))),sha,branch:"main"})});
+    return put.ok;
+  }catch(e){ return false; }
 }
 function qmsg(t,c){ const e=document.getElementById("qmsg"); if(e){ e.textContent=t; e.style.color=c||"#737373"; } }
 

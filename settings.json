@@ -6,6 +6,67 @@
   "max_detail_calls": 30,
   "extra_exclude": [],
   "queries": [
+    "gold scrap grams",
+    "gold chain grams",
+    "gold ring grams",
+    "gold pendant grams",
+    "gold bracelet grams",
+    "gold necklace grams",
+    "gold earrings grams",
+    "585 gold grams",
+    "750 gold grams",
+    "417 gold grams",
+    "14k gold braclet grams",
+    "14k gold neclace grams",
+    "14k gold pendent grams",
+    "14k gold jewlery grams",
+    "14k gold jewerly grams",
+    "10k gold braclet grams",
+    "10k gold neclace grams",
+    "14k gokd chain grams",
+    "solid gold braclet grams",
+    "gold rope chain grams",
+    "gold cuban chain grams",
+    "solid gold rope chain grams",
+    "estate gold jewelry grams",
+    "estate 14k gold grams",
+    "estate 10k gold grams",
+    "broken gold chain grams",
+    "tangled gold chain grams",
+    "damaged gold jewelry grams",
+    "gold for scrap grams",
+    "dental gold grams",
+    "gold teeth grams",
+    "gold tooth cap grams",
+    "gold class ring grams",
+    "gold money clip grams",
+    "gold locket grams",
+    "gold cufflinks grams",
+    "gold coin pendant grams",
+    "gold signet ring grams",
+    "gold charm grams",
+    "gold brooch grams",
+    "gold bangle grams",
+    "gold anklet grams",
+    "gold cross grams",
+    "gold tie clip grams",
+    "gold herringbone chain grams",
+    "soild gold grams",
+    "10k gokd chain grams",
+    "14k gokd ring grams"
+  ],
+  "fast_queries": [
+    "14k gold scrap grams",
+    "10k gold scrap grams",
+    "18k gold scrap grams",
+    "14k gold chain grams"
+  ],
+  "daily_call_budget": 4500,
+  "runs_per_day": 0,
+  "sort_mode": "both",
+  "explore_enabled": true,
+  "explore_frac": 0.12,
+  "explore_pool": [
     "10k gold scrap grams",
     "10k gold chain grams",
     "10k gold ring grams",
@@ -31,33 +92,10 @@
     "22k gold chain grams",
     "22k gold bracelet grams",
     "24k gold scrap grams",
-    "585 gold grams",
-    "750 gold grams",
-    "417 gold grams",
-    "14k gold braclet grams",
-    "14k gold neclace grams",
-    "14k gold pendent grams",
-    "14k gold jewlery grams",
-    "14k gold jewerly grams",
-    "10k gold braclet grams",
-    "10k gold neclace grams",
-    "14k gokd chain grams",
-    "solid gold braclet grams",
     "14k gold rope chain grams",
     "14k gold cuban chain grams",
     "10k gold rope chain grams",
     "10k gold cuban chain grams",
-    "solid gold rope chain grams",
-    "estate gold jewelry grams",
-    "estate 14k gold grams",
-    "estate 10k gold grams",
-    "broken gold chain grams",
-    "tangled gold chain grams",
-    "damaged gold jewelry grams",
-    "gold for scrap grams",
-    "dental gold grams",
-    "gold teeth grams",
-    "gold tooth cap grams",
     "14k gold class ring grams",
     "10k gold class ring grams",
     "14k gold money clip grams",
@@ -68,33 +106,10 @@
     "10k gold cufflinks grams",
     "14k gold coin pendant grams",
     "10k gold coin pendant grams",
-    "14k gold signet ring grams",
-    "gold charm grams",
-    "gold brooch grams",
-    "gold bangle grams",
-    "gold anklet grams",
-    "gold cross grams",
-    "gold tie clip grams",
-    "gold herringbone chain grams",
-    "soild gold grams",
-    "10k gokd chain grams",
-    "14k gokd ring grams"
+    "14k gold signet ring grams"
   ],
-  "fast_queries": [
-    "14k gold scrap grams",
-    "10k gold scrap grams",
-    "18k gold scrap grams",
-    "14k gold chain grams"
-  ],
-  "daily_call_budget": 4500,
-  "runs_per_day": 0,
-  "sort_mode": "both",
-  "exclude_mixed": true,
-  "explore_enabled": true,
-  "explore_frac": 0.12,
-  "explore_pool": [],
   "promote_min_deals": 3,
-  "retire_min_runs": 8,
+  "retire_min_runs": 20,
   "exploit_share": 0.7,
   "fb_weight_span": 0.15,
   "fb_half_life_days": 45,
@@ -108,5 +123,64 @@
   "reserve_runs": 5,
   "query_weights": {
     "trap": -99.0
-  }
+  },
+  "retire_rel_median": 0.35,
+  "retire_batch_cap": 2,
+  "retire_min_live": 12,
+  "retire_protect_liked": true,
+  "ag_mode": "prefer",
+  "ag_fee": 40.0,
+  "ag_optional_min": 200.0,
+  "ag_optional_max": 499.99,
+  "ag_required_min": 500.0,
+  "ag_score_penalty": 25,
+  "ag_confirm_min_score": 45,
+  "ag_detail_share": 0.5,
+  "ended_keep_days": 14,
+  "manual_queries": [],
+  "manual_run_id": "",
+  "fb_effects": {
+    "plated": {
+      "query": 0.0,
+      "seller": 1.0
+    },
+    "weight_karat": {
+      "query": 0.0,
+      "seller": 0.0
+    },
+    "stones": {
+      "query": 0.0,
+      "seller": 0.0
+    },
+    "mixed": {
+      "query": 0.0,
+      "seller": 0.0
+    },
+    "irrelevant": {
+      "query": 1.0,
+      "seller": 0.0
+    },
+    "lot": {
+      "query": 0.5,
+      "seller": 0.0
+    },
+    "seller": {
+      "query": 0.0,
+      "seller": 1.0
+    },
+    "overpriced": {
+      "query": 0.0,
+      "seller": 0.0
+    },
+    "style": {
+      "query": 0.0,
+      "seller": 0.0
+    },
+    "other": {
+      "query": 0.0,
+      "seller": 0.0
+    }
+  },
+  "suspect_score_penalty": 8,
+  "reject_sample_max": 120
 }

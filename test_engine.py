@@ -66,8 +66,14 @@ check("watch: bracelet still passes (not a watch band)", gs.is_solid_no_stones("
 cfg = copy.deepcopy(gs.CONFIG)
 now_ms = time.time() * 1000
 fb = [
-    {"id":"a","query":"q_bad","seller":"shady1","verdict":"bad","category":"plated","ts":now_ms},
-    {"id":"b","query":"q_bad","seller":"shady1","verdict":"bad","category":"plated","ts":now_ms},
+    # "irrelevant" is now the reason that means the TERM is at fault. "plated" moved to
+    # the filter-defect group, which flags the seller but deliberately leaves the search
+    # term alone — the term found solid-gold-looking listings, our filter missed the
+    # plating, and retiring the term for that would hide our bug behind a number.
+    {"id":"a","query":"q_bad","seller":"shady1","verdict":"bad","category":"irrelevant","ts":now_ms},
+    {"id":"b","query":"q_bad","seller":"shady1","verdict":"bad","category":"irrelevant","ts":now_ms},
+    {"id":"g","query":"q_defect","seller":"shady1","verdict":"bad","category":"plated","ts":now_ms},
+    {"id":"h","query":"q_defect","seller":"shady1","verdict":"bad","category":"plated","ts":now_ms},
     {"id":"c","query":"q_good","seller":"nice1","verdict":"good","ts":now_ms},
     {"id":"d","query":"q_good","seller":"nice1","verdict":"good","ts":now_ms},
     {"id":"e","query":"q_style","seller":"nice2","verdict":"bad","category":"style","ts":now_ms},
@@ -76,10 +82,13 @@ fb = [
 cfg["feedback_file"] = "_test_fb.json"
 json.dump(fb, open("_test_fb.json","w"))
 qm, sm, block, n = gs.load_feedback(cfg)
-check("fb: event count", n == 6)
+check("fb: event count", n == 8)
 check("fb: bad query weighted down", qm.get("q_bad", 1) < 1.0, str(qm.get("q_bad")))
 check("fb: good query weighted up", qm.get("q_good", 1) > 1.0)
 check("fb: 'style' taps never punish", "q_style" not in qm or qm["q_style"] == 1.0, str(qm.get("q_style")))
+check("fb: a filter-defect tap leaves the search term alone",
+      "q_defect" not in qm or qm["q_defect"] == 1.0, str(qm.get("q_defect")))
+check("fb: a filter-defect tap still flags the seller", sm.get("shady1", 1) < 1.0)
 check("fb: repeat-bad seller blocked", "shady1" in block)
 check("fb: good seller not blocked", "nice1" not in block)
 check("fb: 400-day-old tap ~fully decayed (no block)", "old1" not in block)
@@ -104,6 +113,7 @@ for i, q in enumerate(cfg2["queries"]):   # steady state: everything has history
     stats["queries"][q] = {"runs":10,"deals":0,"traps":0,"last_rc":10,"origin":"core"}
 stats["queries"]["core0"] = {"runs":20,"deals":15,"traps":0,"last_rc":10,"origin":"core"}  # star
 stats["queries"]["core1"] = {"runs":25,"deals":0,"traps":0,"last_rc":10,"origin":"core"}   # retire-able
+cfg2["retire_min_live"] = 1      # see note above: guardrail scaled to the fixture
 stats["queries"]["core2"] = {"runs":10,"deals":0,"traps":0,"last_rc":2,"origin":"core"}    # most starved
 stats["queries"]["14k gold wedding band grams"] = {"runs":4,"deals":3,"traps":0,"origin":"explore"}  # promotable
 core, explore, sorts = gs.select_queries(cfg2, stats, {})
@@ -273,9 +283,280 @@ check("score: thumbs down outweighs a trap",
 check("score: smoothing damps a single lucky run",
       gs.query_value({"runs":1,"strong_ag":1}, cfgW) < gs.query_value({"runs":50,"strong_ag":50}, cfgW))
 
+# --- weight parsing: size next to weight ------------------------------------
+# REGRESSION: one space-tolerant rule handled both "12. 23g" (spaced decimal point)
+# and "13,25g" (European decimal comma). That made "Size 6, 4 grams" read as 6.4g,
+# inventing 2.4g of gold and turning a fairly priced ring into a fake deal.
+_wt = [
+    ("EUC 14K Dome/Shrimp/ Ring, Brushed & Polished Gold, Marked 14k, Size 6, 4 grams", 4.0),
+    ("14k gold ring size 7, 3.2 grams", 3.2),
+    ("10k gold ring sz 9, 5 grams", 5.0),
+    ("14k gold band Size 6.5, 4.1 grams", 4.1),
+    ("14k gold ring size 6 1/2, 3 grams", 3.0),
+    ("14k gold ring size 10 5.5g", 5.5),
+    ("14k gold chain 13,25g", 13.25),          # real European decimal, no space
+    ("14k gold chain 12. 23 grams", 12.23),    # spaced decimal point
+    ("14k gold chain 8 . 5g", 8.5),
+    ("14k gold scrap lot 1,500 grams", 1500.0),
+    ("1/2 gram 14k gold", 0.5),
+]
+for _t, _exp in _wt:
+    check(f"weight: {_t[:44]!r} -> {_exp}g", gs.extract_grams(_t) == _exp,
+          f"got {gs.extract_grams(_t)}")
+check("weight: comma+space is a separator, never a decimal",
+      gs.extract_grams("14k gold ring, 4 grams") == 4.0)
+check("weight: gold-specific parser uses the same size rule",
+      gs.extract_gold_grams("14k ring size 6, gold weight: 4.2g") == 4.2,
+      str(gs.extract_gold_grams("14k ring size 6, gold weight: 4.2g")))
+
+# --- mixed materials on the fast path ---------------------------------------
+# REGRESSION: MIXED_METAL was only ever tested against item specifics on deep-scanned
+# listings, so the fast path — most rows — never checked for a second metal at all.
+for _t in ["Mixed Metal Lot 14k Gold 30 grams", "14k Gold and Sterling Silver Lot 25 grams",
+           "Stainless Steel and 14k Gold Bracelet 20g", "base metal 14k gold ring 5g"]:
+    check(f"mixed: blocked {_t[:38]!r}", not gs.is_solid_no_stones(_t))
+# Tone words are no longer a hard block: "two tone" usually means two colours of gold.
+# They're kept and marked instead — see the graded-verdict tests below.
+for _t in ["Two Tone 14k Gold Ring 5g", "14k Gold Tri-Tone Chain 8 grams"]:
+    check(f"mixed: tone kept as suspect {_t[:32]!r}",
+          gs.material_verdict(_t)["state"] == "suspect")
+for _t in ["14k Solid Gold Rope Chain 12 grams", "14k White Gold Ring 4 grams",
+           "10k Gold Cuban Link 15 grams"]:
+    check(f"mixed: allowed {_t[:38]!r}", gs.is_solid_no_stones(_t))
+check("mixed: 'silver tone' is a colour, not a second metal",
+      not gs.has_mixed_metal("14k gold chain silver tone clasp"))
+
+# a clean title whose BODY reveals a second metal must be caught once we've paid
+# for the detail call anyway
+_it = {"title": "14k Solid Gold Ring 5 grams"}
+check("mixed: description re-check catches a clean title",
+      gs.deep_disqualifies(_it, {"description": "14k gold with sterling silver band"})
+      is not None)
+check("mixed: description re-check catches stones in the body",
+      gs.deep_disqualifies(_it, {"description": "set with three small diamonds"})
+      is not None)
+check("mixed: clean listing survives the re-check",
+      gs.deep_disqualifies(_it, {"description": "solid 14k gold, no stones, 5 grams"})
+      is None)
+
+# --- graded material verdict: the false-negative fix -------------------------
+# A binary filter has to choose which way to be wrong, and choosing "reject" makes the
+# error invisible — a bad listing on the board can be flagged, a good one that never
+# arrived cannot. These are the cases the blunt filter was silently throwing away.
+_mat = [
+    # kept outright: two/tri-tone usually means two COLOURS OF GOLD
+    ("Two Tone 14k Gold Ring white and yellow gold 5g", "clear"),
+    ("14k Yellow Gold Rope Chain with white gold accents 12 grams", "clear"),
+    ("14k Solid Gold Rope Chain 12 grams", "clear"),
+    # kept but marked: another metal, but only on a small part
+    ("14K Gold Chain 20 grams sterling silver clasp", "suspect"),
+    ("14k Solid Gold Bracelet 18g steel spring clasp", "suspect"),
+    ("14k gold bracelet with sterling silver lobster clasp 18g", "suspect"),
+    ("Two Tone 14k Gold Ring 6 grams", "suspect"),
+    ("14k Gold Chain with diamond accent 15 grams", "suspect"),
+    # still blocked: the second material IS the item
+    ("Sterling Silver and 14k Gold Ring 6 grams", "blocked"),
+    ("14k gold and silver bracelet 20g", "blocked"),
+    ("14k yellow gold with stainless steel band", "blocked"),
+    ("Two Tone 14k Gold and Steel Bracelet 20g", "blocked"),
+    ("14k Gold Ring set with diamonds 5g", "blocked"),
+    ("14K Gold Plated Chain 25 grams", "blocked"),
+]
+for _t, _exp in _mat:
+    _v = gs.material_verdict(_t)
+    check(f"material: {_exp:8} {_t[:40]!r}", _v["state"] == _exp,
+          f"got {_v['state']} {_v['tags']}")
+
+check("material: a suspect still passes the yes/no gate",
+      gs.is_solid_no_stones("14K Gold Chain 20 grams sterling silver clasp"))
+check("material: blocked still fails the yes/no gate",
+      not gs.is_solid_no_stones("Sterling Silver and 14k Gold Ring 6 grams"))
+check("material: every blocked verdict explains itself",
+      all(gs.material_verdict(t)["reason"] for t, e in _mat if e == "blocked"))
+
+# a suspect is demoted, not discarded — and ranks below an identical clear listing
+_spotM = 3400/31.1035
+def _mkm(title, grams):
+    return {"itemId": "v1|1|0", "title": title,
+            "price": {"value": str(round(gs.PURITY[14]*_spotM*grams*0.7, 2))},
+            "shippingOptions": [{"shippingCost": {"value": "0"}}],
+            "seller": {"username": "a", "feedbackScore": 900, "feedbackPercentage": "99.5"},
+            "additionalImages": [1, 2, 3]}
+_cfgM = copy.deepcopy(gs.CONFIG)
+_clear = gs.evaluate(_mkm("14k Solid Gold Rope Chain 20 grams", 20), _spotM, _cfgM)
+_susp = gs.evaluate(_mkm("14k Gold Chain 20 grams sterling silver clasp", 20), _spotM, _cfgM)
+check("material: a suspect survives evaluation", _susp is not None)
+check("material: suspect ranks below an identical clear listing",
+      _susp["score"] < _clear["score"], f"{_susp['score']} vs {_clear['score']}")
+check("material: the row says why it's uncertain",
+      _susp["material"] == "suspect" and bool(_susp["material_why"]))
+
+# the deep re-check must use the SAME grading, or it undoes the whole thing
+check("material: deep re-check keeps a component-metal suspect",
+      gs.deep_disqualifies({"title": "14k Gold Chain 20 grams"},
+                           {"description": "solid 14k gold, sterling silver lobster clasp"})
+      is None)
+check("material: deep re-check still blocks a primary second metal",
+      gs.deep_disqualifies({"title": "14k Solid Gold Ring 5 grams"},
+                           {"description": "14k gold with a stainless steel band"})
+      is not None)
+
+# --- feedback: a filter defect must not retire a good search term ------------
+# The fb_effects table was honoured for alerting and silently ignored for rotation,
+# so a 👎 meaning "our parser missed this" hit the term at full weight.
+_cfgFB = copy.deepcopy(gs.CONFIG); _cfgFB["feedback_file"] = "_test_fb_cat.json"
+json.dump({"events": [
+    {"query": "gold ring grams", "verdict": "bad", "category": "mixed"},
+    {"query": "gold ring grams", "verdict": "bad", "category": "weight_karat"},
+    {"query": "gold ring grams", "verdict": "bad", "category": "stones"},
+    {"query": "gold ring grams", "verdict": "bad", "category": "plated"},
+    {"query": "junk term",       "verdict": "bad", "category": "irrelevant"},
+    {"query": "plain term",      "verdict": "bad"},
+]}, open("_test_fb_cat.json", "w"))
+_fbc = gs.feedback_counts(_cfgFB)
+check("feedback: filter-defect 👎 carries no rotation weight",
+      _fbc["gold ring grams"]["down"] == 0, str(_fbc["gold ring grams"]))
+check("feedback: 'not what I searched for' still penalises the term",
+      _fbc["junk term"]["down"] == 1.0)
+check("feedback: an uncategorised 👎 keeps full weight",
+      _fbc["plain term"]["down"] == 1.0)
+
+# and the consequence that actually matters: it must not get retired for our bug
+_statsFB = {"meta": {"run_counter": 0}, "queries": {
+    "gold ring grams": {"runs": 30, "deals": 6, "strong": 6, "origin": "core"}}}
+_cfgFB["retire_min_live"] = 1
+_, _retFB = gs.update_query_stats(_cfgFB, _statsFB, [], [])
+check("feedback: a term isn't retired for our own filter defects",
+      "gold ring grams" not in _retFB)
+
+# defects are logged as evidence, and never auto-edit anything
+_cfgFB["defects_file"] = "_test_defects.json"
+_bl = gs.build_defect_backlog(_cfgFB, [{"id": "1", "reason": "second metal named in the listing body"}])
+check("defects: backlog counts every defect category",
+      sum(_bl["by_category"].values()) == 4, str(_bl["by_category"]))
+check("defects: engine drops recorded alongside your taps", _bl["total"] == 5)
+for _f in ("_test_fb_cat.json", "_test_defects.json"):
+    if os.path.exists(_f): os.remove(_f)
+
+# REGRESSION: the AG penalty must not gate the detail call that removes it. A 30%
+# under-melt listing scores 60 on melt but ~35 after the unconfirmed-AG docking; with
+# a confirmation floor of 45 it could never be confirmed, so the docking was permanent.
+_cfgML = copy.deepcopy(gs.CONFIG)
+_spotML = 3400/31.1035
+_itML = {"itemId": "v1|9|0", "title": "14K Solid Gold Ring 5 grams",
+         "price": {"value": str(round(gs.PURITY[14]*_spotML*5*0.7, 2))},
+         "shippingOptions": [{"shippingCost": {"value": "0"}}],
+         "seller": {"username": "a", "feedbackScore": 900, "feedbackPercentage": "99.5"},
+         "additionalImages": [1, 2, 3]}
+_rML = gs.evaluate(_itML, _spotML, _cfgML)
+check("ag: melt_score is recorded before the AG penalty",
+      _rML["melt_score"] > _rML["score"], f"{_rML['melt_score']} vs {_rML['score']}")
+check("ag: an unconfirmed listing still clears the confirmation floor",
+      _rML["melt_score"] >= _cfgML["ag_confirm_min_score"],
+      f"{_rML['melt_score']} vs floor {_cfgML['ag_confirm_min_score']}")
+
+# --- guardrails on the relative retirement rule -----------------------------
+# The floor exists so a bad sweep can't gut coverage. Same fixture, production floor.
+_cfgFloor = copy.deepcopy(gs.CONFIG); _cfgFloor["query_stats_file"] = "_test_qs4.json"
+_statsFloor = {"meta": {"run_counter": 0}, "queries": {
+    "dead1": {"runs": 30, "deals": 0, "traps": 20, "origin": "core"},
+    "dead2": {"runs": 30, "deals": 0, "traps": 18, "origin": "core"},
+    "ok":    {"runs": 30, "deals": 8, "strong_ag": 8, "origin": "core"}}}
+_, _retF = gs.update_query_stats(_cfgFloor, _statsFloor, [], [])
+check("retire: live-term floor blocks culling a small pool", _retF == [])
+
+# batch cap: many dead terms, big pool, only retire_batch_cap go per sweep
+_cfgCap = copy.deepcopy(gs.CONFIG); _cfgCap["query_stats_file"] = "_test_qs5.json"
+_cfgCap["retire_batch_cap"] = 2; _cfgCap["retire_min_live"] = 1
+_statsCap = {"meta": {"run_counter": 0}, "queries": {
+    f"dead{i}": {"runs": 30, "deals": 0, "traps": 10, "origin": "core"} for i in range(9)}}
+_statsCap["queries"]["good"] = {"runs": 30, "deals": 9, "strong_ag": 9, "origin": "core"}
+_, _retC = gs.update_query_stats(_cfgCap, _statsCap, [], [])
+check("retire: batch cap limits retirements per sweep", len(_retC) == 2, str(len(_retC)))
+
+# a term you've thumbed up is never auto-retired, however bad its numbers
+_cfgLiked = copy.deepcopy(gs.CONFIG); _cfgLiked["query_stats_file"] = "_test_qs6.json"
+_cfgLiked["retire_min_live"] = 1; _cfgLiked["feedback_file"] = "_test_fb_liked.json"
+json.dump({"events": [{"query": "liked", "verdict": "good"},
+                      {"query": "liked", "verdict": "good"}]},
+          open("_test_fb_liked.json", "w"))
+_statsLiked = {"meta": {"run_counter": 0}, "queries": {
+    "liked": {"runs": 30, "deals": 0, "traps": 15, "origin": "core"},
+    "other": {"runs": 30, "deals": 5, "strong": 5, "origin": "core"}}}
+_, _retL = gs.update_query_stats(_cfgLiked, _statsLiked, [], [])
+check("retire: net-liked term protected from auto-retirement", "liked" not in _retL)
+os.remove("_test_fb_liked.json")
+
+# --- Authenticity Guarantee -------------------------------------------------
+_cfgAG = copy.deepcopy(gs.CONFIG)
+_spot = 3400/31.1035
+def _agitem(price, grams=8.0, qp=None, karat=14):
+    it = {"itemId": "v1|1|0", "title": f"{karat}K Solid Gold Rope Chain {grams} grams",
+          "price": {"value": str(price)},
+          "shippingOptions": [{"shippingCost": {"value": "0.00"}}],
+          "seller": {"username": "s", "feedbackScore": 900, "feedbackPercentage": "99.5"},
+          "additionalImages": [1, 2, 3]}
+    if qp: it["qualifiedPrograms"] = qp
+    return it
+_AGOPT = {"addonServices": [{"serviceType": "AUTHENTICITY_GUARANTEE",
+                             "selection": "OPTIONAL", "serviceFee": {"value": "40.00"}}]}
+_AGREQ = {"addonServices": [{"serviceType": "AUTHENTICITY_GUARANTEE",
+                             "selection": "REQUIRED", "serviceFee": {"value": "0.00"}}]}
+
+check("ag: search-hit badge reads as included",
+      gs.ag_status(_agitem(700, qp=["AUTHENTICITY_GUARANTEE"]), _cfgAG)[0] == "included")
+check("ag: detail OPTIONAL reads as optional with its fee",
+      gs.ag_status(_agitem(300), _cfgAG, detail=_AGOPT)[:2] == ("optional", 40.0))
+check("ag: detail REQUIRED reads as included",
+      gs.ag_status(_agitem(700), _cfgAG, detail=_AGREQ)[0] == "included")
+check("ag: a detail call with no AG is a CONFIRMED none",
+      gs.ag_status(_agitem(300), _cfgAG, detail={"description": "x"}) == ("none", 0.0, True))
+check("ag: below the band, no authentication at any price",
+      gs.ag_status(_agitem(120), _cfgAG)[0] == "none")
+check("ag: in-band search hit is an UNCONFIRMED guess, never a guarantee",
+      gs.ag_status(_agitem(300), _cfgAG)[0] == "unknown"
+      and gs.ag_status(_agitem(300), _cfgAG)[2] is False)
+
+# the fee must actually be charged into profit, not just displayed
+_p14 = gs.PURITY[14]*_spot
+_rowOpt = gs.evaluate(_agitem(round(_p14*8*0.70), 8.0), _spot, _cfgAG, detail=_AGOPT)
+check("ag: paying the fee is reflected in profit",
+      abs((_rowOpt["raw_profit"] - _rowOpt["profit"]) - 40.0) < 0.01,
+      f"{_rowOpt['raw_profit']} vs {_rowOpt['profit']}")
+
+# score must never fall as the discount deepens (the fee cliff regression)
+_prev, _mono = -1, True
+for _pct in (0.05, 0.10, 0.12, 0.15, 0.20, 0.30, 0.40):
+    _r = gs.evaluate(_agitem(round(_p14*5*(1-_pct)), 5.0), _spot, _cfgAG)
+    if not _r: continue
+    if _r["score"] < _prev: _mono = False
+    _prev = _r["score"]
+check("ag: score is monotonic across the fee threshold", _mono)
+
+# an unprotected listing must rank below an identical protected one
+_pr = gs.evaluate(_agitem(round(_p14*8*0.75), 8.0, qp=["AUTHENTICITY_GUARANTEE"]), _spot, _cfgAG)
+_un = gs.evaluate(_agitem(round(_p14*8*0.75), 8.0), _spot, _cfgAG,
+                  detail={"description": "x"})
+check("ag: protected outranks identical unprotected", _pr["score"] > _un["score"],
+      f"{_pr['score']} vs {_un['score']}")
+
+# the fee must never soften a trap
+_trap = gs.evaluate(_agitem(round(_p14*8*0.20), 8.0), _spot, _cfgAG, detail=_AGOPT)
+check("ag: fee never masks a trap", _trap["trap"] is True)
+
+# require mode drops what can't be authenticated
+_cfgReq = copy.deepcopy(_cfgAG); _cfgReq["ag_mode"] = "require"
+check("ag: require mode drops unauthenticatable listings",
+      gs.evaluate(_agitem(120, 1.5), _spot, _cfgReq) is None)
+
 # REGRESSION: the old rule retired only on `deals==0 AND traps==0`, so a search
 # returning nothing but traps was immortal. That's why rotation stalled.
 cfgT = copy.deepcopy(gs.CONFIG); cfgT["query_stats_file"] = "_test_qs3.json"
+# The live-term floor and batch cap are production guardrails sized for a ~48-term
+# pool. This fixture has three, so scale them down; otherwise the floor (correctly)
+# refuses to retire anything and the test is measuring the guardrail, not the rule.
+cfgT["retire_min_live"] = 1
+cfgT["retire_batch_cap"] = 2
 statsT = {"meta": {"run_counter": 0}, "queries": {
     "trapfactory": {"runs": 30, "deals": 0, "traps": 20, "origin": "core"},
     "neutral":     {"runs": 30, "deals": 10, "weak": 10, "traps": 0, "origin": "core"},
