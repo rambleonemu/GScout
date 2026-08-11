@@ -117,7 +117,13 @@
   "history_max": 10000,
   "zero_alert_every": 6,
   "pinned_queries": [],
-  "disabled_queries": [],
+  "disabled_queries": [
+    "10k gold watch case grams",
+    "14k gold watch case grams",
+    "18k gold watch case grams",
+    "10k gold scrap lot grams",
+    "14k gold scrap lot grams"
+  ],
   "strong_score": 88,
   "revived_queries": [],
   "reserve_runs": 5,

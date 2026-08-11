@@ -210,9 +210,16 @@ CONFIG = {
         "rope chain", "figaro chain", "box chain", "curb chain", "cuban chain",
         "franco chain", "herringbone chain", "mariner chain", "wheat chain",
         "singapore chain", "byzantine chain", "snake chain", "bead chain",
+        "valentino chain", "omega chain", "marine chain", "brilliantina chain",
+        "perfectina chain", "criss cross chain", "anchor chain",
+        "pocket watch chain", "albert chain", "fob chain",
         # bracelets
         "id bracelet", "tennis bracelet", "charm bracelet", "bangle bracelet",
-        "cuban bracelet", "rope bracelet", "link bracelet",
+        "cuban bracelet", "rope bracelet", "link bracelet", "presidential bracelet",
+        "nugget bracelet", "figaro bracelet", "byzantine bracelet",
+        "herringbone bracelet", "franco bracelet", "curb bracelet",
+        "snake bracelet", "box bracelet", "mariner bracelet", "wheat bracelet",
+        "omega bracelet",
         # rings
         "wedding band", "pinky ring", "nugget ring", "signet ring", "class ring",
         "band ring", "dome ring", "cigar band",
@@ -221,9 +228,10 @@ CONFIG = {
         # pendants / misc
         "medal", "religious medal", "crucifix pendant", "cross pendant",
         "charm", "locket", "cuff links", "money clip", "grillz", "chai pendant",
-        "horseshoe pendant", "nugget pendant",
-        # scrap / lots
-        "scrap lot", "dental gold", "broken jewelry lot", "estate lot",
+        "horseshoe pendant", "nugget pendant", "nameplate necklace",
+        "nameplate pendant", "initial necklace",
+        # scrap
+        "dental gold",
         # common misspellings — the actual edge
         "braclet", "bracelett", "neckalce", "necklance", "earings", "earrigs",
         "chian", "chainn", "jewlery", "jewelery", "pendent", "pendnat",
