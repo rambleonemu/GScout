@@ -187,5 +187,14 @@
   "verdict": "bad",
   "category": "stones",
   "ts": 1785366164813
+ },
+ {
+  "id": "v1|276910628182|0",
+  "query": "24k gold bangle bracelet grams",
+  "seller": "selling_savings_jewelers",
+  "karat": "24K",
+  "verdict": "bad",
+  "category": "mixed",
+  "ts": 1786736946265
  }
 ]
