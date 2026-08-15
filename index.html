@@ -226,6 +226,7 @@
   .fnum { width:62px; background:#141414; border:1px solid #2a2210; color:#e5e5e5;
           border-radius:6px; padding:3px 6px; font-family:ui-monospace,monospace; font-size:11px; }
   .chip.xs { font-size:9.5px; padding:2px 6px; }
+  .fdash { color:#737373; font-size:11px; padding:0 1px; }
   .toggle.sm { font-size:11px; }
   .cmd input[type=range] { width:88px; accent-color:#f5c518; }
   @media (max-width:620px){ .cmd { position:static; } .cmd-grid { gap:5px 10px; } }
@@ -324,7 +325,7 @@ const persist = ()=>{ LS.set("gdd_seen",[...SEEN]); LS.set("gdd_hidden",[...HIDD
   LS.set("gdd_lastseen",LASTSEEN); LS.set("gdd_ended",ENDED); };
 
 const ui = LS.get("gdd_ui",{})||{};
-const F = Object.assign({karat:"All",minScore:0,minProfit:0,showTraps:false,showOffers:true,
+const F = Object.assign({karat:"All",minScore:0,minProfit:0,minPrice:0,maxPrice:null,showTraps:false,showOffers:true,
   hideSeen:false,showHidden:false,settingsOpen:false,
   sortBy:"score",   // "score" | "profit" | "age" | "pricedrop"
   showTrends:true, showPrices:true, showEnded:true, showQueries:true, fbOpen:null,
@@ -793,6 +794,16 @@ function render(){
     // so the score/profit sliders would silently bury every one of them at their default
     // of 0. They get their own toggle instead of being judged on numbers that don't mean
     // the same thing for them.
+    // Price band applies to every row, offer candidates included: what you can afford
+    // to tie up in one piece doesn't change because the listing takes offers. A null
+    // maxPrice means no ceiling, which is why this tests for null rather than using a
+    // sentinel number that would quietly become a real limit.
+    .filter(x=>{
+      const p=+x.price||0;
+      if(p < (+F.minPrice||0)) return false;
+      if(F.maxPrice!=null && F.maxPrice!=="" && p > +F.maxPrice) return false;
+      return true;
+    })
     .filter(x=>x.offer_only ? F.showOffers : (x.score>=F.minScore && (x.profit||0)>=F.minProfit));
   if(F.hideSeen) list=list.filter(x=>!SEEN.has(x.id)||SAVED.has(x.id));
 
@@ -975,6 +986,13 @@ function render(){
           <span class="fval">${F.minScore}</span></div>
         <div class="fgroup"><span class="flabel">min profit</span>
           <input class="fnum" type="number" value="${F.minProfit}" oninput="setF('minProfit',+this.value||0)"></div>
+        <div class="fgroup"><span class="flabel">price</span>
+          <input class="fnum" type="number" min="0" step="50" placeholder="min" value="${F.minPrice||""}"
+                 title="Hide anything cheaper than this." oninput="setF('minPrice',+this.value||0)">
+          <span class="fdash">–</span>
+          <input class="fnum" type="number" min="0" step="50" placeholder="∞" value="${F.maxPrice==null?"":F.maxPrice}"
+                 title="Leave empty for no upper limit." oninput="setPriceMax(this.value)">
+          ${(F.minPrice||F.maxPrice!=null)?`<button class="chip xs" onclick="clearPrice()">clear</button>`:""}</div>
         <div class="fgroup">
           <label class="toggle sm" title="Listings priced above melt that accept Best Offer, close enough that a realistic offer would clear melt. Scored negative — they're not deals until a seller accepts."><input type="checkbox" ${F.showOffers?"checked":""} onchange="setF('showOffers',this.checked)"> offer candidates</label>
           <label class="toggle sm"><input type="checkbox" ${F.hideSeen?"checked":""} onchange="setF('hideSeen',this.checked)"> hide seen</label>
@@ -1311,6 +1329,10 @@ function copyLink(url,e){ e.stopPropagation(); e.preventDefault();
   }).catch(()=>{ window.prompt('Copy this link:',url); });
 }
 function setF(k,v){ F[k]=v; saveUI(); render(); }
+// An empty max box means "no ceiling", so it has to store null — coercing "" to 0 the
+// way the other numeric filters do would silently hide every listing on the board.
+function setPriceMax(v){ setF("maxPrice", (v===""||v==null) ? null : (+v||0)); }
+function clearPrice(){ F.minPrice=0; F.maxPrice=null; saveUI(); render(); }
 
 // The run message appears in two places (header + drawer), so address them by class.
 // With a shared id, getElementById would only ever reach the header copy and every
