@@ -241,5 +241,32 @@
   "verdict": "bad",
   "category": "plated",
   "ts": 1786796240278
+ },
+ {
+  "id": "v1|318729970940|0",
+  "query": "gold chain grams",
+  "seller": "naingram54",
+  "karat": "14K",
+  "verdict": "bad",
+  "category": "plated",
+  "ts": 1786796246536
+ },
+ {
+  "id": "v1|402558340073|0",
+  "query": "gold ring grams",
+  "seller": "kelo_60",
+  "karat": "14K",
+  "verdict": "bad",
+  "category": "plated",
+  "ts": 1786796253345
+ },
+ {
+  "id": "v1|327263192224|0",
+  "query": "14k gold drop earrings grams",
+  "seller": "eternal_accents",
+  "karat": "14K",
+  "verdict": "bad",
+  "category": "stones",
+  "ts": 1786796262286
  }
 ]
