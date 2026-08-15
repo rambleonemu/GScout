@@ -1,0 +1,42 @@
+name: gold-scout-fast
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fast-sweep:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests
+      - name: Restore memory (alert dedup)
+        uses: actions/cache@v4
+        with:
+          path: |
+            seen_ids.json
+            history.json
+            query_stats.json
+            results.json
+          key: scout-state-${{ github.run_id }}
+          restore-keys: |
+            scout-state-
+      - name: Fast sweep (alerts only, no site update)
+        env:
+          SCOUT_MODE: fast
+          EBAY_CLIENT_ID: ${{ secrets.EBAY_CLIENT_ID }}
+          EBAY_CLIENT_SECRET: ${{ secrets.EBAY_CLIENT_SECRET }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          ALERT_MIN_SCORE: "12"
+        run: python3 gold_scout.py
+      - name: Heartbeat on failure
+        if: failure()
+        run: |
+          curl -s -H "Title: Gold Scout FAST · RUN FAILED" -H "Priority: default" -H "Tags: warning" \
+            -d "A fast sweep failed (crash, token, or quota). Check the Actions log: https://github.com/${{ github.repository }}/actions" \
+            "https://ntfy.sh/${{ secrets.NTFY_TOPIC }}" || true
