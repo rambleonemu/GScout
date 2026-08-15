@@ -214,5 +214,23 @@
   "verdict": "bad",
   "category": "mixed",
   "ts": 1786795938451
+ },
+ {
+  "id": "v1|147505342251|0",
+  "query": "gold class ring grams",
+  "seller": "thesilverreview",
+  "karat": "10K",
+  "verdict": "bad",
+  "category": "stones",
+  "ts": 1786796036801
+ },
+ {
+  "id": "v1|178393620515|0",
+  "query": "gold class ring grams",
+  "seller": "proverbs31..13",
+  "karat": "10K",
+  "verdict": "bad",
+  "category": "stones",
+  "ts": 1786796043867
  }
 ]
