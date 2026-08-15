@@ -112,6 +112,7 @@
   .why { font-size:11px; color:#6ee7b7; margin-top:5px; line-height:1.4; opacity:.85; }
   .mixed { font-size:11px; color:#c4b5fd; margin-top:5px; line-height:1.4; }
   .grn { color:#34d399; } .red { color:#fb7185; } .wht { color:#d4d4d4; } .amb { color:#fbbf24; }
+  .ofrm { color:#a5b4fc; }
   .acts { display:flex; flex-direction:column; gap:6px; flex-shrink:0; }
   .iact { background:none; border:1px solid #2a2210; color:#a3a3a3; border-radius:7px; width:34px; height:28px;
           cursor:pointer; font-size:14px; display:flex; align-items:center; justify-content:center; }
@@ -125,6 +126,8 @@
   .tag.tr { background:rgba(110,231,183,.18); color:#6ee7b7; }
   .tag.n { background:rgba(52,211,153,.18); color:#34d399; }
   .tag.g { background:rgba(96,165,250,.15); color:#60a5fa; }
+  .tag.off { background:rgba(129,140,248,.22); color:#a5b4fc; font-weight:600; }
+  .tag.ofr { background:rgba(129,140,248,.12); color:#818cf8; }
   .runwrap { border:1px solid rgba(212,175,55,.35); background:rgba(212,175,55,.04);
              border-radius:10px; padding:14px; margin-bottom:16px; }
   .tag.ag    { background:rgba(59,130,246,.18); color:#93c5fd; }
@@ -315,7 +318,7 @@ const persist = ()=>{ LS.set("gdd_seen",[...SEEN]); LS.set("gdd_hidden",[...HIDD
   LS.set("gdd_lastseen",LASTSEEN); LS.set("gdd_ended",ENDED); };
 
 const ui = LS.get("gdd_ui",{})||{};
-const F = Object.assign({karat:"All",minScore:0,minProfit:0,showTraps:false,
+const F = Object.assign({karat:"All",minScore:0,minProfit:0,showTraps:false,showOffers:true,
   hideSeen:false,showHidden:false,settingsOpen:false,
   sortBy:"score",   // "score" | "profit" | "age" | "pricedrop"
   showTrends:true, showPrices:true, showEnded:true, showQueries:true, fbOpen:null,
@@ -390,7 +393,21 @@ function trendVal(h,metric){
   return h.avg_under ?? null;
 }
 
+function marginMeta(x){
+  // Offer-only rows are OVER melt as listed, so the usual "↓ x% under · profit" line
+  // would read as a loss on a listing that isn't priced yet. Show the gap to close and
+  // what the suggested offer would actually earn instead.
+  if(x.offer_only){
+    return `<span class="ofrm">↑ ${Math.abs(x.under_pct)}% over · ${fmt(x.all_in_per_g)}/g asked</span>`
+         + `<span class="ofrm">offer ${fmt(x.offer_price)} → ${fmt(x.offer_profit)} profit</span>`;
+  }
+  return `<span class="grn">↓ ${x.under_pct}% · ${fmt(x.all_in_per_g)}/g</span>`
+       + `<span class="${x.profit>0?"grn":"red"}">profit ${fmt(x.profit)}</span>`;
+}
 function scoreStyle(s){
+  // negative = offer-only: over melt as listed, needs a successful offer to become a
+  // deal at all. Its own colour so it never reads as a weak-but-real deal.
+  if(s<0) return {c:"#818cf8",l:"Offer"};
   if(s>=75) return {c:"#34d399",l:"Excellent"};
   if(s>=50) return {c:"#a3e635",l:"Strong"};
   if(s>=25) return {c:"#fbbf24",l:"Fair"};
@@ -742,8 +759,11 @@ function render(){
   let list=pool
     .filter(x=>!HIDDEN.has(x.id) || F.showHidden)
     .filter(x=>F.karat==="All"||x.karat===F.karat)
-    .filter(x=>x.score>=F.minScore)
-    .filter(x=>(x.profit||0)>=F.minProfit);
+    // Offer-only rows score negative and show a negative as-listed profit by definition,
+    // so the score/profit sliders would silently bury every one of them at their default
+    // of 0. They get their own toggle instead of being judged on numbers that don't mean
+    // the same thing for them.
+    .filter(x=>x.offer_only ? F.showOffers : (x.score>=F.minScore && (x.profit||0)>=F.minProfit));
   if(F.hideSeen) list=list.filter(x=>!SEEN.has(x.id)||SAVED.has(x.id));
 
   // order: saved first, then unseen, then seen; each block ranked by effective score
@@ -926,6 +946,7 @@ function render(){
         <div class="fgroup"><span class="flabel">min profit</span>
           <input class="fnum" type="number" value="${F.minProfit}" oninput="setF('minProfit',+this.value||0)"></div>
         <div class="fgroup">
+          <label class="toggle sm" title="Listings priced above melt that accept Best Offer, close enough that a realistic offer would clear melt. Scored negative — they're not deals until a seller accepts."><input type="checkbox" ${F.showOffers?"checked":""} onchange="setF('showOffers',this.checked)"> offer candidates</label>
           <label class="toggle sm"><input type="checkbox" ${F.hideSeen?"checked":""} onchange="setF('hideSeen',this.checked)"> hide seen</label>
           <label class="toggle sm"><input type="checkbox" ${F.showHidden?"checked":""} onchange="setF('showHidden',this.checked)"> show hidden</label>
           ${SEEN.size?`<button class="chip xs" onclick="clearSet('seen')">clear seen (${SEEN.size})</button>`:""}
@@ -1191,7 +1212,8 @@ function dealRow(x){
     x.verify?'<span class="tag v">verify wt</span>':'',
     x.mixed_lot?'<span class="tag m">mixed lot</span>':'',
     x.gold_wt?'<span class="tag g">gold wt</span>':'',
-    x.offer?'<span class="tag">offer</span>':'',
+    x.offer_only?`<span class="tag off" title="Priced above melt as listed. It takes offers, and an offer of ${fmt(x.offer_price)} would bring it to roughly ${fmt(x.offer_profit)} profit. Nothing here is a deal until a seller accepts.">make offer · ${fmt(x.offer_price)}</span>`:
+      (x.offer?'<span class="tag ofr" title="Seller accepts Best Offer — the listed price is a starting point, not the price you have to pay.">accepts offers</span>':''),
   ].join("");
   return `<div class="${cls.join(" ")}" id="row-${x.id}">
     <a class="link" href="${x.url}" target="_blank" rel="noopener" onclick="markSeen('${x.id}')">
@@ -1202,8 +1224,7 @@ function dealRow(x){
         <div class="meta">
           <span class="wht">${x.karat} · ${x.grams}g</span>
           <span>${fmt(x.price)}${x.ship?` +${fmt(x.ship)} ship`:""}</span>
-          <span class="grn">↓ ${x.under_pct}% · ${fmt(x.all_in_per_g)}/g</span>
-          <span class="${x.profit>0?"grn":"red"}">profit ${fmt(x.profit)}</span>
+          ${marginMeta(x)}
           ${x.seller_pct?`<span>seller ${x.seller_pct}%${x.seller_score!=null?` · ${x.seller_score>=1000?(x.seller_score/1000).toFixed(0)+"k":x.seller_score} sales`:""}</span>`:""}
           ${x.photos!=null?`<span>${x.photos} photo${x.photos===1?"":"s"}</span>`:""}
           ${x.listed?`<span class="age">${listingAge(x.listed)||""}</span>`:""}
@@ -1238,8 +1259,7 @@ function endedRow(x){
         <div class="meta">
           <span class="wht">${x.karat} · ${x.grams}g</span>
           <span>${fmt(x.price)}${x.ship?` +${fmt(x.ship)} ship`:""}</span>
-          <span class="grn">↓ ${x.under_pct}% · ${fmt(x.all_in_per_g)}/g</span>
-          <span class="${x.profit>0?"grn":"red"}">profit ${fmt(x.profit)}</span>
+          ${marginMeta(x)}
         </div>
       </div></a>
     <div class="acts">

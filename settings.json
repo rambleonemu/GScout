@@ -2,7 +2,7 @@
   "payout_pct": 1,
   "trap_under_pct": 0.5,
   "min_feedback_pct": 96,
-  "alert_min_score": 70,
+  "alert_min_score": 12,
   "max_detail_calls": 30,
   "extra_exclude": [],
   "queries": [

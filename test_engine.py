@@ -112,7 +112,7 @@ stats = {"meta":{"run_counter":10},"queries":{}}
 for i, q in enumerate(cfg2["queries"]):   # steady state: everything has history
     stats["queries"][q] = {"runs":10,"deals":0,"traps":0,"last_rc":10,"origin":"core"}
 stats["queries"]["core0"] = {"runs":20,"deals":15,"traps":0,"last_rc":10,"origin":"core"}  # star
-stats["queries"]["core1"] = {"runs":25,"deals":0,"traps":0,"last_rc":10,"origin":"core"}   # retire-able
+stats["queries"]["core1"] = {"runs":25,"deals":0,"traps":0,"last_rc":10,"origin":"explore"}   # retire-able
 cfg2["retire_min_live"] = 1      # see note above: guardrail scaled to the fixture
 stats["queries"]["core2"] = {"runs":10,"deals":0,"traps":0,"last_rc":2,"origin":"core"}    # most starved
 stats["queries"]["14k gold wedding band grams"] = {"runs":4,"deals":3,"traps":0,"origin":"explore"}  # promotable
@@ -459,9 +459,9 @@ check("ag: an unconfirmed listing still clears the confirmation floor",
 # The floor exists so a bad sweep can't gut coverage. Same fixture, production floor.
 _cfgFloor = copy.deepcopy(gs.CONFIG); _cfgFloor["query_stats_file"] = "_test_qs4.json"
 _statsFloor = {"meta": {"run_counter": 0}, "queries": {
-    "dead1": {"runs": 30, "deals": 0, "traps": 20, "origin": "core"},
-    "dead2": {"runs": 30, "deals": 0, "traps": 18, "origin": "core"},
-    "ok":    {"runs": 30, "deals": 8, "strong_ag": 8, "origin": "core"}}}
+    "dead1": {"runs": 30, "deals": 0, "traps": 20, "origin": "explore"},
+    "dead2": {"runs": 30, "deals": 0, "traps": 18, "origin": "explore"},
+    "ok":    {"runs": 30, "deals": 8, "strong_ag": 8, "origin": "explore"}}}
 _, _retF = gs.update_query_stats(_cfgFloor, _statsFloor, [], [])
 check("retire: live-term floor blocks culling a small pool", _retF == [])
 
@@ -469,8 +469,8 @@ check("retire: live-term floor blocks culling a small pool", _retF == [])
 _cfgCap = copy.deepcopy(gs.CONFIG); _cfgCap["query_stats_file"] = "_test_qs5.json"
 _cfgCap["retire_batch_cap"] = 2; _cfgCap["retire_min_live"] = 1
 _statsCap = {"meta": {"run_counter": 0}, "queries": {
-    f"dead{i}": {"runs": 30, "deals": 0, "traps": 10, "origin": "core"} for i in range(9)}}
-_statsCap["queries"]["good"] = {"runs": 30, "deals": 9, "strong_ag": 9, "origin": "core"}
+    f"dead{i}": {"runs": 30, "deals": 0, "traps": 10, "origin": "explore"} for i in range(9)}}
+_statsCap["queries"]["good"] = {"runs": 30, "deals": 9, "strong_ag": 9, "origin": "explore"}
 _, _retC = gs.update_query_stats(_cfgCap, _statsCap, [], [])
 check("retire: batch cap limits retirements per sweep", len(_retC) == 2, str(len(_retC)))
 
@@ -557,16 +557,39 @@ cfgT = copy.deepcopy(gs.CONFIG); cfgT["query_stats_file"] = "_test_qs3.json"
 # refuses to retire anything and the test is measuring the guardrail, not the rule.
 cfgT["retire_min_live"] = 1
 cfgT["retire_batch_cap"] = 2
+cfgT["promote_min_deals"] = 999  # isolate retirement from promotion for this fixture —
+                                  # otherwise neutral/earner promote mid-pass, leave the
+                                  # live pool, and trip the min-live floor on their own
 statsT = {"meta": {"run_counter": 0}, "queries": {
-    "trapfactory": {"runs": 30, "deals": 0, "traps": 20, "origin": "core"},
-    "neutral":     {"runs": 30, "deals": 10, "weak": 10, "traps": 0, "origin": "core"},
-    "earner":      {"runs": 30, "deals": 8, "strong_ag": 8, "traps": 3, "origin": "core"}}}
+    "trapfactory": {"runs": 30, "deals": 0, "traps": 20, "origin": "explore"},
+    "neutral":     {"runs": 30, "deals": 10, "weak": 10, "traps": 0, "origin": "explore"},
+    "earner":      {"runs": 30, "deals": 8, "strong_ag": 8, "traps": 3, "origin": "explore"}}}
 _, retiredT = gs.update_query_stats(cfgT, statsT, [], [])
 check("retire: trap-only search finally retires", "trapfactory" in retiredT)
 check("retire: neutral low-score search survives", "neutral" not in retiredT)
 check("retire: AG earner survives despite some traps", "earner" not in retiredT)
 check("retire: records the score it died at",
       statsT["queries"]["trapfactory"].get("retired_score") is not None)
+
+# NEW BEHAVIOR: core-origin and already-promoted queries are permanent — the same
+# zero-deal, trap-heavy numbers that retire an explore query must NOT retire a core
+# one or a promoted one, since the whole point is that established terms don't get
+# culled just because the relative bar moved against them on a slow sweep.
+cfgPerm = copy.deepcopy(gs.CONFIG); cfgPerm["query_stats_file"] = "_test_qs_perm.json"
+cfgPerm["retire_min_live"] = 0
+cfgPerm["retire_batch_cap"] = 5
+statsPerm = {"meta": {"run_counter": 0}, "queries": {
+    "dead_core":      {"runs": 30, "deals": 0, "traps": 20, "origin": "core"},
+    "dead_promoted":  {"runs": 30, "deals": 0, "traps": 20, "origin": "explore", "status": "promoted"},
+    "dead_explore":   {"runs": 30, "deals": 0, "traps": 20, "origin": "explore"},
+    "earner":         {"runs": 30, "deals": 8, "strong_ag": 8, "origin": "core"}}}
+_, retiredPerm = gs.update_query_stats(cfgPerm, statsPerm, [], [])
+check("retire: core-origin query survives identical bad numbers",
+      "dead_core" not in retiredPerm)
+check("retire: promoted query survives identical bad numbers",
+      "dead_promoted" not in retiredPerm)
+check("retire: explore-origin, not-yet-promoted query still retires",
+      "dead_explore" in retiredPerm)
 
 # ---------- revive: bounded fresh trials ----------
 cfgV = copy.deepcopy(cfgT); cfgV["revived_queries"] = ["trapfactory"]; cfgV["max_revives"] = 2

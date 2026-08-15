@@ -27,6 +27,11 @@ SCOUT_MODE    = os.environ.get("SCOUT_MODE", "full")   # "full" or "fast"
 CONFIG = {
     "payout_pct":     1.00,   # your buyer pays the full listed gold price (100% of melt)
     "trap_under_pct": 0.50,   # more than this far under price = likely fake/misweighed -> hidden
+    "offer_max_over_pct": 0.25,   # asking price up to this far OVER melt still worth flagging
+                                   # if the seller takes offers — beyond this, no realistic
+                                   # accepted offer bridges the gap
+    "offer_target_under_pct": 0.10,  # the margin an offer should aim for: 10% under melt,
+                                      # the same "believable, not too-good" band real deals land in
     "tax_pct":        0.0,    # sales tax you pay buying on eBay
     "min_feedback_pct":   96.0,  # skip sellers below this positive-feedback %
     "min_feedback_score": 10,    # skip brand-new sellers below this many ratings
@@ -616,6 +621,7 @@ def load_settings(cfg):
               "suspect_score_penalty", "reject_sample_max",
               "strong_score",
               "payout_pct", "trap_under_pct", "max_detail_calls",
+              "offer_max_over_pct", "offer_target_under_pct",
               "min_feedback_pct", "min_feedback_score", "results_per_query",
               "daily_call_budget", "runs_per_day", "fb_half_life_days",
               "fb_weight_span", "fb_seller_block_bad", "explore_frac",
@@ -1026,6 +1032,11 @@ def update_query_stats(cfg, stats, ran, rows):
         ag = bool(r.get("auth_guaranteed"))
         if r["trap"]:
             st["traps"] = st.get("traps", 0) + 1
+        elif r.get("offer_only"):
+            # tracked, but deliberately NOT counted as a deal: these are over melt as
+            # listed and only become deals if a seller accepts an offer. Counting them
+            # would promote a query on listings that never actually cleared the bar.
+            st["offers"] = st.get("offers", 0) + 1
         else:
             st["deals"] = st.get("deals", 0) + 1
             key = ("strong" if (r.get("score") or 0) >= strong_at else "weak") + ("_ag" if ag else "")
@@ -1075,8 +1086,18 @@ def update_query_stats(cfg, stats, ran, rows):
     # ---- retirement pass: relative, capped, and floored ----
     # Judged against the live pool's own median so the bar tracks actual market
     # conditions instead of a number that was right on the day it was typed.
+    #
+    # Retirement only applies to genuinely experimental terms: still-trialing explore
+    # queries that haven't earned promotion yet. Core queries and anything already
+    # promoted are permanent from here on — they proved themselves (or were hand-picked
+    # to begin with) and shouldn't get culled later just because the relative bar moved
+    # against them on a slow week. This also keeps the median itself honest: mixing a
+    # 375-run established query into the same pool as a 3-run new candidate would judge
+    # brand-new terms against a bar built mostly from established ones' momentum.
     live = {q: st for q, st in qs.items()
-            if st.get("status") not in ("retired", "disabled") and q not in pinned}
+            if st.get("status") not in ("retired", "disabled", "promoted")
+            and st.get("origin") != "core"
+            and q not in pinned}
     scores = sorted(query_value(st, cfg, fbc.get(q)) for q, st in live.items())
     median = scores[len(scores) // 2] if scores else 0.0
     # A negative or zero median means the whole pool is struggling (dry market, gold
@@ -1283,8 +1304,20 @@ def evaluate_core(item, karat, grams, spot24, cfg, title_text=None, photos=None,
 
     base_cost = (price + ship) * tax
     raw_all_in_g = base_cost / grams
+    # Over melt as listed. Normally that's the end of it — but a listing that takes
+    # offers isn't priced yet, it's just anchored. If the ask is close enough that a
+    # realistic offer clears melt, it belongs on the board as a deal you'd have to
+    # negotiate into, not a listing that silently disappeared. It carries a NEGATIVE
+    # score (how far under water the ask is) so it sorts below every real deal and can
+    # never win an alert, while still being visible and sortable alongside them.
+    offer_only = False
     if raw_all_in_g >= page_per_g:
-        return None                        # not under melt even before authentication
+        if "BEST_OFFER" not in (item.get("buyingOptions") or []):
+            return None
+        over_by = (raw_all_in_g - page_per_g) / page_per_g
+        if over_by > float(cfg.get("offer_max_over_pct", 0.25)):
+            return None                    # no realistic offer bridges this gap
+        offer_only = True
     raw_under_by = (page_per_g - raw_all_in_g) / page_per_g
 
     # trap on the RAW discount, never the fee-adjusted one: "too good to be true" is a
@@ -1298,6 +1331,12 @@ def evaluate_core(item, karat, grams, spot24, cfg, title_text=None, photos=None,
     pen_none = int(cfg.get("ag_score_penalty", 12))
     pen_unk = pen_none // 2                # unconfirmed guess: half the confidence
     def _sc(ub, pen):
+        # An offer-only listing has no positive margin to score yet — what matters is
+        # how far the ask has to come down. Score it as the negative of that gap, so
+        # -8 reads "8% over melt, needs an offer" and sorts below every real deal
+        # while still ranking offer candidates sensibly against each other.
+        if offer_only:
+            return -min(100, max(1, round(-ub * 100)))
         base = deal_score(max(ub, 0.0), cfg["payout_pct"], cfg["trap_under_pct"])
         if ag_mode in ("prefer", "require") and not is_trap:
             base = max(0, base - pen)
@@ -1328,6 +1367,17 @@ def evaluate_core(item, karat, grams, spot24, cfg, title_text=None, photos=None,
             best = cand
     score, buy_state, cost, under_by, charge_ag = best
     all_in_g = cost / grams
+    # What to actually offer. Aimed at the same believable margin real deals land in,
+    # working backwards from melt through the same cost stack (shipping, tax, and the
+    # authentication fee if this is a listing you'd want protected).
+    offer_price = offer_profit = None
+    if offer_only:
+        target_under = float(cfg.get("offer_target_under_pct", 0.10))
+        target_cost = page_per_g * (1 - target_under) * grams
+        # charge_ag is whichever fee the chosen buy path carries, so the offer accounts
+        # for it instead of quoting a price that only works unauthenticated
+        offer_price = round(max(0.0, (target_cost - charge_ag * tax) / tax - ship), 2)
+        offer_profit = round(page_per_g * grams * cfg["payout_pct"] - target_cost, 2)
     # true when paying for the guarantee would wipe out the margin, i.e. this is only
     # a deal if you're willing to take it unauthenticated
     ag_fee_kills_margin = (ag_state in ("optional", "unknown") and ag_fee > 0
@@ -1399,6 +1449,11 @@ def evaluate_core(item, karat, grams, spot24, cfg, title_text=None, photos=None,
         elif ag_state == "optional" and ag_confirmed:
             why.insert(0, f"authentication can be added for ${ag_fee:.0f}")
     deal_why = ", ".join(why[:3])
+    if offer_only:
+        # lead with the ask, since that's the whole action item on these
+        deal_why = (f"offer ${offer_price:,.0f} to clear melt "
+                    f"(asking {abs(round(raw_under_by*100, 1))}% over)"
+                    + (f" · {deal_why}" if deal_why else ""))
 
 
 
@@ -1425,6 +1480,10 @@ def evaluate_core(item, karat, grams, spot24, cfg, title_text=None, photos=None,
         "ag_fee_kills_margin": ag_fee_kills_margin,
         "mixed_lot": mixed, "mixed_note": mixed_note,
         "offer": "BEST_OFFER" in (item.get("buyingOptions") or []),
+        # offer_only: priced over melt as listed, but takes offers and is close enough
+        # that offer_price would clear melt. Carries a negative score; never alerted on.
+        "offer_only": offer_only,
+        "offer_price": offer_price, "offer_profit": offer_profit,
         "seller_pct": s_pct, "seller_score": s_score, "seller_user": seller.get("username", ""), "photos": photos,
         "id": item.get("itemId", ""),
         "karat": f"{karat}K", "grams": grams, "price": round(price, 2), "ship": round(ship, 2),
@@ -1648,7 +1707,12 @@ def _apply_trust(row, cfg):
     if qm == 1.0 and sm == 1.0:
         return
     row["base_score"] = row["score"]
-    row["score"] = max(0, min(100, round(row["score"] * qm * sm)))
+    if row.get("offer_only"):
+        # negative by design (how far over melt the ask sits) — clamping to 0 here would
+        # flatten every offer candidate into the break-even pile and lose the ordering
+        row["score"] = max(-100, min(-1, round(row["score"] * qm * sm)))
+    else:
+        row["score"] = max(0, min(100, round(row["score"] * qm * sm)))
 
 
 def collect(token, queries, spot24, cfg, sort, deep):
