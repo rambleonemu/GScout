@@ -232,5 +232,14 @@
   "verdict": "bad",
   "category": "stones",
   "ts": 1786796043867
+ },
+ {
+  "id": "v1|177151973288|0",
+  "query": "gold rope chain grams",
+  "seller": "yuzanaflower",
+  "karat": "24K",
+  "verdict": "bad",
+  "category": "plated",
+  "ts": 1786796240278
  }
 ]
