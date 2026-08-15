@@ -292,6 +292,28 @@ WATCH_RE = re.compile(
     r"timepiece(s)?|movement|watch\s?case|watch\s?band|watch\s?strap|"
     r"watch\s?head)\b", re.I)
 BAR_RE = re.compile(r"\b(bar|bullion|ingot|shot|pellet|grain)\b", re.I)
+# Watches sold by brand and model, never using the word "watch". "OMEGA DEVILLE 18K
+# GOLD 90 GRAMS" is a wristwatch, but every word-based check reads it as solid gold —
+# and 90g of "watch" is mostly movement, crystal and caseback, so the melt maths is
+# fiction. Brand alone is not enough to condemn a listing though: an omega CHAIN is a
+# real jewellery style, and Cartier/Tiffany make plenty of actual jewellery. So a brand
+# hit only blocks when nothing in the title names a piece of jewellery.
+WATCH_BRAND_RE = re.compile(
+    r"\b(rolex|omega|seiko|citizen|longines|tissot|bulova|hamilton|elgin|waltham|"
+    r"breitling|tag\s?heuer|heuer|iwc|jaeger|lecoultre|vacheron|audemars|patek|"
+    r"philippe|zenith|movado|rado|baume|mercier|piaget|gruen|benrus|hampden|"
+    r"universal\s?gen[eè]ve|girard|perregaux|panerai|tudor|oris|mido|wittnauer|"
+    r"illinois\s?watch|howard)\b", re.I)
+# Model names that are watches regardless of what else the title says
+WATCH_MODEL_RE = re.compile(
+    r"\b(deville|de\s?ville|seamaster|speedmaster|constellation|datejust|submariner|"
+    r"daytona|oyster|explorer|president(ial)?\s?watch|geneve|automatic|self[\s-]?winding|"
+    r"quartz|jewels?\s?movement|\d{2}\s?jewels)\b", re.I)
+# Nouns that name an actual piece of jewellery, used to rescue brand hits
+JEWELRY_NOUN_RE = re.compile(
+    r"\b(chain|necklace|bracelet|bangle|anklet|ring|band|pendant|charm|earring(s)?|"
+    r"stud(s)?|hoop(s)?|brooch|pin|locket|cross|crucifix|nameplate|cuff\s?link(s)?|"
+    r"tie\s?(clip|tack|bar)|money\s?clip|medal|medallion)\b", re.I)
 # positive-signal language for the "why this scores well" line
 HALLMARK_RE = re.compile(r"\b(stamp(ed)?|hallmark(ed)?|marked|signed|tested|acid[\s-]?test"
                          r"|electronic(ally)?[\s-]?tested|xrf)\b", re.I)
@@ -527,6 +549,17 @@ def material_verdict(text):
     if WATCH_RE.search(text):
         return {"state": "blocked", "reason": "watch — structurally mixed material",
                 "tags": ["watch"]}
+    # brand/model watches that never say "watch" — blocked only when the title doesn't
+    # also name an actual piece of jewellery (so "14k omega chain" still gets through)
+    if not JEWELRY_NOUN_RE.search(text):
+        _wm = WATCH_MODEL_RE.search(text)
+        _wb = WATCH_BRAND_RE.search(text)
+        if _wm or _wb:
+            _what = (_wm or _wb).group(0)
+            return {"state": "blocked",
+                    "reason": f"watch ({_what}) — the stated weight is case, movement and "
+                              f"crystal, not solid gold",
+                    "tags": ["watch"]}
     if EXTRA_EXCLUDE_RE and EXTRA_EXCLUDE_RE.search(text):
         return {"state": "blocked", "reason": "matched one of your own exclude words",
                 "tags": ["user_exclude"]}
@@ -1245,6 +1278,11 @@ def get_token():
 
 
 API_ERRORS = {"count": 0, "quota": 0}   # non-200s this run; quota = HTTP 429s specifically
+# Diagnostic: whether eBay's SEARCH response actually carries qualifiedPrograms. The
+# field is documented on ItemSummary, but if it never shows up in practice then free-AG
+# detection can only happen on a paid detail call, and that changes where the budget
+# should go. Surfaced in results.json so it's answerable from one real run.
+SEARCH_AG_PROBE = {"items": 0, "with_field": 0, "with_ag": 0}
 
 
 def auth_guaranteed(item):
@@ -1340,6 +1378,9 @@ def search(token, query, limit, sort="price", cfg=None):
             headers=headers,
             params={"q": query,
                     "filter": base_filter,
+                    # EXTENDED costs nothing extra (same call) and adds shortDescription,
+                    # which gives the weight and material parsers more to work with.
+                    "fieldgroups": "EXTENDED",
                     "sort": sort, "limit": page, "offset": offset}, timeout=30)
         if r.status_code != 200:
             API_ERRORS["count"] += 1
@@ -1347,6 +1388,16 @@ def search(token, query, limit, sort="price", cfg=None):
                 API_ERRORS["quota"] += 1
             print(f"  ! {query!r} -> HTTP {r.status_code}: {r.text[:120]}"); break
         items = r.json().get("itemSummaries", []) or []
+        # Does the search response carry qualifiedPrograms at all? AG "included" can
+        # only ever be detected here for free; if this field never arrives we're paying
+        # a detail call for something the search should have told us. Counting it
+        # settles that with data instead of a guess about eBay's behaviour.
+        for _it in items:
+            SEARCH_AG_PROBE["items"] += 1
+            if "qualifiedPrograms" in _it:
+                SEARCH_AG_PROBE["with_field"] += 1
+                if "AUTHENTICITY_GUARANTEE" in (_it.get("qualifiedPrograms") or []):
+                    SEARCH_AG_PROBE["with_ag"] += 1
         out.extend(items)
         if len(items) < page:
             break
@@ -2187,6 +2238,8 @@ def main():
             "suspect_score_penalty", "reject_sample_max")},
         # AG rollup so the dashboard can headline "how much of today's board is
         # actually protected" without recomputing it from every row
+        # did the SEARCH response ever carry qualifiedPrograms this run?
+        "search_ag_probe": dict(SEARCH_AG_PROBE),
         "ag_summary": {
             "included":  sum(1 for d in deals if d.get("ag_state") == "included"),
             "optional":  sum(1 for d in deals if d.get("ag_state") == "optional"),

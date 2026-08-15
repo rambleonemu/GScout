@@ -245,6 +245,24 @@ for _t in ["14k gold jewelry lot 20 grams", "14k gold bulk 20 grams",
     check(f"lot: caught by wording ({_t.split()[2]})",
           gs.evaluate(_it, 132.0, copy.deepcopy(gs.CONFIG)) is None)
 
+# ---------- watches sold by brand/model, never saying "watch" ----------
+# "OMEGA DEVILLE 18K GOLD 90 GRAMS" reads as solid gold to every word-based check, but
+# 90g of watch is case, movement and crystal. Brand alone can't condemn a listing
+# though: an omega CHAIN is a real jewellery style.
+for _wt in ["OMEGA DEVILLE 18K GOLD 41301300 WITH ORIGINAL RECEIPT 90 GRAMS TOTAL FROM 1993",
+            "Rolex Datejust 18k Gold 85 Grams",
+            "Vintage Elgin 14k Gold Case 45 Grams",
+            "Seiko 18k Gold Automatic 60 Grams",
+            "Longines 14k Gold 17 Jewels 40 Grams"]:
+    check(f"watch: blocked by brand/model ({_wt.split()[0].lower()})",
+          gs.material_verdict(_wt)["state"] == "blocked", _wt[:40])
+for _jw in ["14k Yellow Gold Omega Chain Necklace 20 Grams",
+            "18k Gold Omega Bracelet 25 Grams",
+            "Tiffany 18k Gold Rope Chain 30 Grams",
+            "14k Gold Presidential Bracelet 40 Grams"]:
+    check(f"watch: jewellery survives a brand hit ({_jw.split()[3].lower()})",
+          gs.material_verdict(_jw)["state"] != "blocked", _jw[:40])
+
 # ---------- purchasable AG: read addonServices the way Browse actually returns it ----
 # REGRESSION: this used to branch on svc["selection"] == "OPTIONAL". The Browse
 # AddonService type has only serviceType, serviceId and serviceFee — "selection"/
