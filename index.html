@@ -126,8 +126,14 @@
   .tag.tr { background:rgba(110,231,183,.18); color:#6ee7b7; }
   .tag.n { background:rgba(52,211,153,.18); color:#34d399; }
   .tag.g { background:rgba(96,165,250,.15); color:#60a5fa; }
-  .tag.off { background:rgba(129,140,248,.22); color:#a5b4fc; font-weight:600; }
-  .tag.ofr { background:rgba(129,140,248,.12); color:#818cf8; }
+  /* capability icons: shield = authentication, tag = offers. Only shown when true. */
+  .ico { display:inline-flex; align-items:center; justify-content:center; margin-left:5px;
+         width:22px; height:22px; border-radius:999px; vertical-align:middle; }
+  .ico svg { flex:none; }
+  .ico.agf { background:rgba(52,211,153,.16); color:#34d399; }
+  .ico.ago { background:rgba(125,211,252,.16); color:#7dd3fc; }
+  .ico.ofo { background:rgba(129,140,248,.22); color:#a5b4fc; }
+  .ico.ofs { background:rgba(129,140,248,.12); color:#818cf8; }
   .runwrap { border:1px solid rgba(212,175,55,.35); background:rgba(212,175,55,.04);
              border-radius:10px; padding:14px; margin-bottom:16px; }
   .tag.ag    { background:rgba(59,130,246,.18); color:#93c5fd; }
@@ -564,6 +570,30 @@ function triState(key,label){
 // from the price band, NOT eBay's word — it is deliberately styled and labelled as
 // unconfirmed, because treating a guess as a guarantee is the exact mistake this
 // whole feature exists to prevent.
+// Icon badges. Only positive, verified capabilities get a mark — the absence of a
+// shield IS the "no guarantee" signal, which keeps the row readable instead of hanging
+// a warning on every listing. Nothing here is drawn from a price-band guess: an
+// unconfirmed listing shows no shield, because a guess is not a guarantee.
+const ICO = {
+  agFree:'<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l8 3.5v6c0 5-3.4 8.9-8 10.5-4.6-1.6-8-5.5-8-10.5v-6z"/><path d="M9 12l2 2 4-4"/></svg>',
+  agBuy :'<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l8 3.5v6c0 5-3.4 8.9-8 10.5-4.6-1.6-8-5.5-8-10.5v-6z"/><path d="M12 8.5v6M9 11.5h6"/></svg>',
+  offer :'<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.6 13.4l-7.2 7.2a2 2 0 01-2.8 0l-6.2-6.2a2 2 0 01-.6-1.4V5a2 2 0 012-2h7.9a2 2 0 011.5.6l5.4 5.4a2 2 0 010 2.8z"/><circle cx="8.5" cy="8.5" r="1.3" fill="currentColor" stroke="none"/></svg>',
+};
+function iconBadges(x){
+  const st=x.ag_state||(x.auth_guaranteed?"included":"none");
+  const fee=x.ag_fee_quoted||x.ag_fee||0;
+  const out=[];
+  // Only CONFIRMED authentication earns a shield.
+  if(st==="included" && x.ag_confirmed!==false)
+    out.push(`<span class="ico agf" title="Authenticity Guaranteed — eBay authenticates this before it ships, free to you.">${ICO.agFree}</span>`);
+  else if(st==="optional" && x.ag_confirmed)
+    out.push(`<span class="ico ago" title="Authentication can be ADDED at checkout for ${fmt(fee)}. That fee is already charged into the score and profit shown.">${ICO.agBuy}</span>`);
+  if(x.offer_only)
+    out.push(`<span class="ico ofo" title="Priced above melt as listed, but takes offers. An offer of ${fmt(x.offer_price)} would land about ${fmt(x.offer_profit)} profit. Not a deal until a seller accepts.">${ICO.offer}</span>`);
+  else if(x.offer)
+    out.push(`<span class="ico ofs" title="Seller accepts Best Offer — the listed price is a starting point, not what you have to pay.">${ICO.offer}</span>`);
+  return out.join("");
+}
 function agInfo(x){
   const st=x.ag_state||(x.auth_guaranteed?"included":"none");
   const fee=x.ag_fee_quoted||x.ag_fee||0;
@@ -1203,8 +1233,7 @@ function dealRow(x){
   if(saved)cls.push("saved"); if(fb&&fb.verdict==="bad")cls.push("rated-bad");
   const tags=[
     isNew?'<span class="tag n">new</span>':'',
-    (()=>{const a=agInfo(x);
-      return `<span class="tag ${a.cls}" title="${esc(a.tip)}">${a.txt}</span>`;})(),
+    iconBadges(x),
     (()=>{const mm=matInfo(x); return mm?`<span class="tag sus" title="${esc(mm.tip)}">${mm.txt}</span>`:"";})(),
     x.ag_fee_kills_margin?'<span class="tag t" title="Paying for authentication would wipe out the entire margin on this listing, so it only works as an unguaranteed buy.">fee eats margin</span>':'',
     trusted?`<span class="tag tr">★ trusted seller (${TRUSTED[x.seller_user]})</span>`:'',
@@ -1212,8 +1241,7 @@ function dealRow(x){
     x.verify?'<span class="tag v">verify wt</span>':'',
     x.mixed_lot?'<span class="tag m">mixed lot</span>':'',
     x.gold_wt?'<span class="tag g">gold wt</span>':'',
-    x.offer_only?`<span class="tag off" title="Priced above melt as listed. It takes offers, and an offer of ${fmt(x.offer_price)} would bring it to roughly ${fmt(x.offer_profit)} profit. Nothing here is a deal until a seller accepts.">make offer · ${fmt(x.offer_price)}</span>`:
-      (x.offer?'<span class="tag ofr" title="Seller accepts Best Offer — the listed price is a starting point, not the price you have to pay.">accepts offers</span>':''),
+
   ].join("");
   return `<div class="${cls.join(" ")}" id="row-${x.id}">
     <a class="link" href="${x.url}" target="_blank" rel="noopener" onclick="markSeen('${x.id}')">
@@ -1255,7 +1283,7 @@ function endedRow(x){
       <div class="score" style="box-shadow:inset 0 0 0 1px ${st.c}55">
         <span class="n" style="color:${st.c}">${x.score}</span><span class="l">${st.l}</span></div>
       <div style="min-width:0;flex:1">
-        <div class="title">${x.title} <span class="tag">ended ${endedAge(x._endedTs)}</span>${(()=>{const a=agInfo(x);return ` <span class="tag ${a.cls}">${a.txt}</span>`;})()}${SAVED.has(x.id)?' <span class="tag tr">★ was saved</span>':''}</div>
+        <div class="title">${x.title} <span class="tag">ended ${endedAge(x._endedTs)}</span>${iconBadges(x)}${SAVED.has(x.id)?' <span class="tag tr">★ was saved</span>':''}</div>
         <div class="meta">
           <span class="wht">${x.karat} · ${x.grams}g</span>
           <span>${fmt(x.price)}${x.ship?` +${fmt(x.ship)} ship`:""}</span>

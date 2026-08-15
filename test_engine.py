@@ -215,13 +215,127 @@ check("search: no qualifiedPrograms in the eBay query", "qualifiedPrograms" not 
 check("search: no deliveryPostalCode dependency", "deliveryPostalCode" not in filt)
 
 # ---------- mixed lots: a tag, never a filter ----------
+# NEW RULE: a lot's stated weight covers several pieces that can't be judged from a
+# title or photo, so lots are dropped outright UNLESS eBay's own guarantee covers the
+# listing — and that has to be CONFIRMED by eBay, never inferred from a price band.
 mixed_item = {"price":{"value":"500"},"seller":{"feedbackPercentage":"99.5","feedbackScore":"800"},
               "title":"14k and 10k gold lot 20 grams","itemId":"mx1","itemWebUrl":"u","buyingOptions":[]}
 r_mixed = gs.evaluate(mixed_item, 132.0, copy.deepcopy(gs.CONFIG))
-check("mixed: lot still surfaces", r_mixed is not None)
-check("mixed: tagged as mixed", r_mixed is not None and r_mixed["mixed_lot"] is True)
-check("mixed: priced at the lowest karat floor", r_mixed is not None and r_mixed["karat"] == "10K")
-check("mixed: carries an explanatory note", r_mixed is not None and "floor" in (r_mixed["mixed_note"] or ""))
+check("lot: unguaranteed lot is dropped", r_mixed is None)
+
+# same lot, but eBay confirms it ships authenticated -> kept, tagged, priced at the floor
+_lotAG = dict(mixed_item, itemId="mx2", qualifiedPrograms=["AUTHENTICITY_GUARANTEE"])
+r_lotAG = gs.evaluate(_lotAG, 132.0, copy.deepcopy(gs.CONFIG))
+check("lot: guaranteed lot survives", r_lotAG is not None)
+check("lot: tagged as mixed", r_lotAG is not None and r_lotAG["mixed_lot"] is True)
+check("lot: priced at the lowest karat floor", r_lotAG is not None and r_lotAG["karat"] == "10K")
+check("lot: carries an explanatory note", r_lotAG is not None and "floor" in (r_lotAG["mixed_note"] or ""))
+
+# a single piece with no lot language is unaffected by the lot rule
+_single = {"price":{"value":"500"},"seller":{"feedbackPercentage":"99.5","feedbackScore":"800"},
+           "title":"14k gold rope chain 20 grams","itemId":"sg1","itemWebUrl":"u","buyingOptions":[]}
+check("lot: single piece unaffected",
+      gs.evaluate(_single, 132.0, copy.deepcopy(gs.CONFIG)) is not None)
+
+# lot-shaped wording that isn't a karat mix must still be caught
+for _t in ["14k gold jewelry lot 20 grams", "14k gold bulk 20 grams",
+           "14k gold 5 pcs 20 grams", "14k gold assorted 20 grams"]:
+    _it = {"price":{"value":"500"},"seller":{"feedbackPercentage":"99.5","feedbackScore":"800"},
+           "title":_t,"itemId":"lt","itemWebUrl":"u","buyingOptions":[]}
+    check(f"lot: caught by wording ({_t.split()[2]})",
+          gs.evaluate(_it, 132.0, copy.deepcopy(gs.CONFIG)) is None)
+
+# ---------- purchasable AG: read addonServices the way Browse actually returns it ----
+# REGRESSION: this used to branch on svc["selection"] == "OPTIONAL". The Browse
+# AddonService type has only serviceType, serviceId and serviceFee — "selection"/
+# "selected" belongs to CheckoutAddonService in the Order API. The key never existed in
+# the response, so neither branch fired and purchasable AG was undetectable even when
+# the detail call returned it perfectly.
+_cfgAddon = copy.deepcopy(gs.CONFIG)
+_it350 = {"price": {"value": "350"}}
+def _addon(fee, stype="AUTHENTICITY_GUARANTEE"):
+    return {"addonServices": [{"serviceType": stype, "serviceId": "1",
+                               "serviceFee": {"value": fee, "currency": "USD"}}]}
+
+_st, _fee, _conf = gs.ag_status(_it350, _cfgAddon, detail=_addon("40.00"))
+check("addon: AG add-on detected as optional", _st == "optional", _st)
+check("addon: real fee is read, not the default", _fee == 40.0, str(_fee))
+check("addon: marked confirmed, not a guess", _conf is True)
+
+check("addon: zero-fee add-on counts as included",
+      gs.ag_status(_it350, _cfgAddon, detail=_addon("0.00"))[0] == "included")
+check("addon: serviceType match is case-insensitive",
+      gs.ag_status(_it350, _cfgAddon, detail=_addon("25.00", "authenticity_guarantee"))[0] == "optional")
+check("addon: BUYER_PROTECTION is not mistaken for AG",
+      gs.ag_status(_it350, _cfgAddon, detail=_addon("5.00", "BUYER_PROTECTION"))[0] == "none")
+check("addon: free AG wins over a paid add-on entry",
+      gs.ag_status(_it350, _cfgAddon,
+                   detail=dict(_addon("40.00"),
+                               qualifiedPrograms=["AUTHENTICITY_GUARANTEE"]))[0] == "included")
+check("addon: detail with no AG is a confirmed none",
+      gs.ag_status(_it350, _cfgAddon, detail={}) == ("none", 0.0, True))
+check("addon: without a detail call it stays an unconfirmed guess",
+      gs.ag_status(_it350, _cfgAddon)[2] is False)
+
+# the fee must actually reach the deal maths, not just the badge
+_agFeeItem = {"price": {"value": "350"}, "title": "14k Gold Rope Chain 6 Grams",
+              "seller": {"feedbackPercentage": "99.5", "feedbackScore": "800"},
+              "itemId": "af1", "itemWebUrl": "u", "buyingOptions": []}
+_rFee = gs.evaluate(_agFeeItem, 140.0, copy.deepcopy(gs.CONFIG), detail=_addon("40.00"))
+check("addon: optional state reaches the row", _rFee is not None and _rFee["ag_state"] == "optional")
+check("addon: quoted fee reaches the row", _rFee is not None and _rFee["ag_fee_quoted"] == 40.0)
+
+# ---------- structured item specifics: the seller's own declaration ----------
+# Text checks can only say a bad word is absent. These read eBay's name/value aspects,
+# which can both BLOCK definitively and CONFIRM a piece is all gold with no stones.
+def _D(pairs, **kw):
+    d = {"localizedAspects": [{"name": k, "values": [v]} for k, v in pairs]}
+    d.update(kw)
+    return d
+
+check("aspect: named main stone blocks",
+      gs.aspect_verdict(_D([("Metal","Yellow Gold"),("Main Stone","Diamond")]))["state"] == "blocked")
+check("aspect: carat weight blocks",
+      gs.aspect_verdict(_D([("Metal","14k Gold"),("Total Carat Weight","0.50")]))["state"] == "blocked")
+check("aspect: ZERO carat weight is not stones",
+      gs.aspect_verdict(_D([("Metal","14k Gold"),("Total Carat Weight","0.00"),
+                            ("Main Stone","None")]))["state"] == "clean")
+check("aspect: declared base metal blocks",
+      gs.aspect_verdict(_D([("Metal","Gold Plated"),("Base Metal","Copper")]))["state"] == "blocked")
+check("aspect: metal field naming silver blocks",
+      gs.aspect_verdict(_D([("Metal","Sterling Silver with Gold")]))["state"] == "blocked")
+check("aspect: gemstone COUNT blocks",
+      gs.aspect_verdict(_D([("Metal","Gold"),("Number of Gemstones","3")]))["state"] == "blocked")
+check("aspect: no-stone + gold metal confirms clean",
+      gs.aspect_verdict(_D([("Metal","Yellow Gold"),("Metal Purity","14k"),
+                            ("Main Stone","None")]))["state"] == "clean")
+check("aspect: two-tone GOLD is not a mixed metal",
+      gs.aspect_verdict(_D([("Metal","White and Yellow Gold"),
+                            ("Main Stone","No Stone")]))["state"] == "clean")
+check("aspect: sparse listing stays unknown",
+      gs.aspect_verdict(_D([("Brand","Unbranded")]))["state"] == "unknown")
+check("aspect: no detail payload stays unknown",
+      gs.aspect_verdict(None)["state"] == "unknown")
+check("aspect: top-level material field is read",
+      gs.aspect_verdict(_D([("Main Stone","None")], material="Solid Gold"))["state"] == "clean")
+
+# blocked aspects must stop a listing even when the title looks perfectly clean
+_cleanTitle = {"price":{"value":"400"},"seller":{"feedbackPercentage":"99.5","feedbackScore":"800"},
+               "title":"14k Yellow Gold Rope Chain 20 Grams","itemId":"as1","itemWebUrl":"u",
+               "buyingOptions":[]}
+_stoneDetail = _D([("Metal","Yellow Gold"),("Main Stone","Diamond")])
+_stoneDetail["description"] = "Lovely piece."
+check("aspect: blocks a listing whose title looks clean",
+      gs.deep_disqualifies(_cleanTitle, _stoneDetail) is not None)
+# REGRESSION: the aspect NAME "Main Stone" contains the word "stone", so flattening
+# specifics into a blob made a listing declaring "Main Stone: None" read as stone-set
+# and get rejected — a false reject on exactly the listings we most want.
+check("aspect: 'Main Stone: None' is not read as having stones",
+      gs.deep_disqualifies(_cleanTitle, _D([("Metal","Yellow Gold"),("Main Stone","None")],
+                                           description="Lovely piece.")) is None)
+check("aspect: clean specifics don't block",
+      gs.deep_disqualifies(_cleanTitle, _D([("Metal","Yellow Gold"),("Main Stone","None")],
+                                           description="Lovely piece.")) is None)
 
 # ---------- per-search hit breakdown feeds the bar chart ----------
 cfgB = copy.deepcopy(gs.CONFIG); cfgB["query_stats_file"] = "_test_qs2.json"

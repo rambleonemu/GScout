@@ -90,7 +90,7 @@ CONFIG = {
     # genuinely may not pay for itself. Raise toward 35 to prefer protection almost
     # always; use ag_mode="require" to make it absolute.
     "ag_score_penalty": 25,
-    "ag_confirm_min_score": 45,# only spend a detail call confirming AG above this score
+    "ag_confirm_min_score": 12,# only spend a detail call confirming AG above this melt score
     "json_out":   "results.json",
     "deals_csv":  "gold_candidates.csv",
     "traps_csv":  "gold_traps.csv",
@@ -296,6 +296,14 @@ BAR_RE = re.compile(r"\b(bar|bullion|ingot|shot|pellet|grain)\b", re.I)
 HALLMARK_RE = re.compile(r"\b(stamp(ed)?|hallmark(ed)?|marked|signed|tested|acid[\s-]?test"
                          r"|electronic(ally)?[\s-]?tested|xrf)\b", re.I)
 SOLID_RE = re.compile(r"\bsolid\b", re.I)
+# Multi-item listings. These are the ones that can't be judged from a title: the stated
+# weight covers several pieces, any of which may not be what the title claims, and a
+# single authentication can't vouch for a pile. Kept ONLY when eBay's own guarantee
+# covers the listing — see the lot rule in evaluate_core().
+LOT_RE = re.compile(
+    r"\b(lots?|bulk|joblot|job\s?lot|assort(ed|ment)|mixed|bundle|collection|"
+    r"grab\s?bag|estate\s+(?:lot|collection)|\d+\s*(?:pc|pcs|piece|pieces)\b|"
+    r"set\s+of\s+\d+|some\s+\w+\s+some\s+\w+|wearable\s+and\s+scrap)\b", re.I)
 # (?<![\$\d.]) stops "$10k obo" reading as 10 karat and "4.14k" style decimals
 KARAT_RE = re.compile(r"(?<![\$\d.])\b(10|14|18|22|24)\s?k(?:t|arat)?\b", re.I)
 FINENESS = {"417": 10, "585": 14, "750": 18, "916": 22, "990": 24, "999": 24}
@@ -374,6 +382,90 @@ MIXED_METAL = re.compile(
 MIXED_METAL_OK = re.compile(
     r"(silver\s?tone|silvertone|silver\s?plated|silver\s?colou?r"
     r"|steel\s?blue|no\s?silver|not\s?silver)", re.I)
+
+
+def aspect_verdict(detail):
+    """Grade materials from eBay's STRUCTURED item specifics, not prose.
+
+    Every check elsewhere in this file reads text: a title, a description, or the
+    aspects flattened into one blob. Text can only ever tell you a bad word is absent,
+    which is not the same as the seller saying the piece is clean. eBay's jewelry
+    listings carry standardised name/value aspects ("Main Stone: None", "Base Metal:
+    Copper", "Total Carat Weight: 0.5"), and reading them by NAME gives two things a
+    regex can't: a definitive block, and a positive all-gold confirmation.
+
+    Returns {"state": "blocked"|"clean"|"unknown", "reason": str, "tags": [str]}
+      blocked - a specific field says stones or a non-gold metal are present
+      clean   - a specific field affirmatively says there are none
+      unknown - the listing didn't fill in the fields that would settle it
+
+    Only ever called with a detail payload, since localizedAspects is getItem-only.
+    """
+    if not detail:
+        return {"state": "unknown", "reason": "", "tags": []}
+    asp = {}
+    for a in (detail.get("localizedAspects") or []):
+        n = (a.get("name") or "").strip().lower()
+        vals = a.get("values") or ([a.get("value")] if a.get("value") else [])
+        v = " ".join(str(x) for x in vals if x).strip()
+        if n and v:
+            asp[n] = v
+    # the top-level Item.material aspect, when the seller filled it in
+    if detail.get("material"):
+        asp.setdefault("material", str(detail["material"]))
+    if not asp:
+        return {"state": "unknown", "reason": "", "tags": []}
+
+    NONE_VALS = {"none", "no stone", "no stones", "none/no stone", "not applicable",
+                 "n/a", "na", "no", "without stones", "no gemstone", "no gemstones"}
+    def _is_none(v):
+        return v.strip().lower().rstrip(".") in NONE_VALS
+
+    # --- stones: a named main/secondary stone, a carat weight, or a stone count ---
+    stone_fields = ("main stone", "secondary stone", "main stone creation",
+                    "gemstone", "stone", "main gemstone")
+    for f in stone_fields:
+        if f in asp and not _is_none(asp[f]):
+            return {"state": "blocked",
+                    "reason": f"item specifics list {asp[f]} under \"{f}\" — the stated weight isn't all gold",
+                    "tags": ["stones"]}
+    for f in ("total carat weight", "carat total weight", "ct tw", "number of gemstones",
+              "number of stones", "total gem weight"):
+        v = asp.get(f)
+        if v and not _is_none(v):
+            try:                      # "0", "0.00 ct" and friends aren't stones
+                if float(re.sub(r"[^\d.]", "", v) or 0) <= 0:
+                    continue
+            except ValueError:
+                pass
+            return {"state": "blocked",
+                    "reason": f"item specifics give {f} as {v} — the stated weight isn't all gold",
+                    "tags": ["stones"]}
+
+    # --- metals: a declared base metal, or a metal field naming something non-gold ---
+    if asp.get("base metal") and not _is_none(asp["base metal"]):
+        return {"state": "blocked",
+                "reason": f"item specifics name a base metal ({asp['base metal']}) — the weight isn't all gold",
+                "tags": ["mixed_primary"]}
+    for f in ("metal", "material", "primary material", "metal type", "band material",
+              "setting material"):
+        v = asp.get(f)
+        if v and has_mixed_metal(v) and not GOLD_COLOR_RE.search(v):
+            return {"state": "blocked",
+                    "reason": f"item specifics give {f} as {v} — names a non-gold metal",
+                    "tags": ["mixed_primary"]}
+
+    # --- positive confirmation: the seller affirmatively said "no stones" ---
+    said_no_stone = any(f in asp and _is_none(asp[f]) for f in stone_fields)
+    metal_field = next((asp[f] for f in ("metal", "material", "primary material", "metal type")
+                        if asp.get(f)), None)
+    metal_is_gold = bool(metal_field) and bool(re.search(r"\bgold\b", metal_field, re.I)) \
+        and not has_mixed_metal(metal_field)
+    if said_no_stone and metal_is_gold:
+        return {"state": "clean",
+                "reason": "item specifics confirm solid gold with no stones",
+                "tags": ["aspect_confirmed"]}
+    return {"state": "unknown", "reason": "", "tags": []}
 
 
 def has_mixed_metal(text):
@@ -1183,24 +1275,31 @@ def ag_status(item, cfg, detail=None):
     fee_default = float(cfg.get("ag_fee", 40.0))
 
     # --- confirmed paths: eBay's own data ---
+    # Free/included AG first: qualifiedPrograms (search AND detail) and the
+    # authenticityGuarantee container (detail only) both mean eBay authenticates this
+    # at no cost. Checked before addonServices so a listing that reports both isn't
+    # mislabelled as something you have to pay for.
+    if auth_guaranteed(detail or item) or auth_guaranteed(item):
+        return ("included", 0.0, True)
+
+    # Purchasable AG: the Browse AddonService type carries serviceType, serviceId and
+    # serviceFee — and nothing else. There is no "selection"/"selected" field here; that
+    # belongs to CheckoutAddonService in the Order API. So the PRESENCE of an
+    # AUTHENTICITY_GUARANTEE entry is itself the signal that the add-on is offered, and
+    # the fee is whatever serviceFee says. Branching on a "selection" value that Browse
+    # never returns meant this path could never fire and optional AG was invisible.
     for svc in (detail or item).get("addonServices") or []:
-        if (svc.get("serviceType") or "") != "AUTHENTICITY_GUARANTEE":
+        if (svc.get("serviceType") or "").upper() != "AUTHENTICITY_GUARANTEE":
             continue
-        sel = (svc.get("selection") or "").upper()
         raw = ((svc.get("serviceFee") or {}).get("value"))
         try:
             fee = float(raw) if raw is not None else fee_default
         except (TypeError, ValueError):
             fee = fee_default
-        if sel == "REQUIRED":
-            # mandatory AG is eBay-funded for the buyer; a nonzero fee here would be
-            # eBay changing the deal, so honour whatever they actually returned
-            return ("included", round(fee, 2), True)
-        if sel == "OPTIONAL":
-            return ("optional", round(fee, 2), True)
-
-    if auth_guaranteed(detail or item) or auth_guaranteed(item):
-        return ("included", 0.0, True)
+        # a zero-fee add-on is eBay covering it, which is the same deal as "included"
+        if fee <= 0:
+            return ("included", 0.0, True)
+        return ("optional", round(fee, 2), True)
 
     # A detail call came back with no AG addon and no AG container: that is a real,
     # confirmed "you cannot buy authentication for this item".
@@ -1297,10 +1396,28 @@ def evaluate_core(item, karat, grams, spot24, cfg, title_text=None, photos=None,
     # deal that correctly carried the fee. Taking the max of two monotonic branches
     # removes the discontinuity instead of papering over it.
     mat = material_verdict(f"{title_text or item.get('title','')}")
+    # A detail call can settle what the title left ambiguous, in both directions. The
+    # blocking direction is handled before we get here; this is the other one — the
+    # seller affirmatively declaring no stones and an all-gold metal clears a suspect
+    # instead of leaving it demoted forever on a suspicion the evidence has answered.
+    if detail is not None:
+        _av = aspect_verdict(detail)
+        if _av["state"] == "clean" and mat["state"] == "suspect":
+            mat = {"state": "clear", "reason": _av["reason"],
+                   "tags": list(mat.get("tags") or []) + ["aspect_confirmed"]}
     ag_state, ag_fee, ag_confirmed = ag_status(item, cfg, detail=detail)
     ag = (ag_state == "included")
     ag_mode = cfg.get("ag_mode", "prefer")
     tax = 1 + cfg["tax_pct"]
+
+    # ---- lots: only kept when eBay's guarantee actually covers them ----
+    # A lot's stated weight spans several pieces. You can't verify it from a photo, one
+    # bad piece poisons the whole weight, and it's the format fakes hide in. The only
+    # thing that makes a lot safe to buy sight-unseen is eBay authenticating it, and
+    # that has to be CONFIRMED by eBay — a price-band guess is not a guarantee.
+    if LOT_RE.search(title_text or item.get("title", "")) or (mixed_karats and len(mixed_karats) > 1):
+        if not (ag_confirmed and ag_state in ("included", "optional")):
+            return None
 
     base_cost = (price + ship) * tax
     raw_all_in_g = base_cost / grams
@@ -1534,6 +1651,20 @@ def deep_disqualifies(item, detail):
         for a in (detail.get("localizedAspects") or [])
     )
     blob = f"{item.get('title','')} {aspects} {desc}"
+    # Structured item specifics first: a field that says "Main Stone: Diamond" or
+    # "Base Metal: Copper" is the seller's own declaration, and beats anything inferred
+    # from prose. Only blocks here — a "clean" verdict is applied in evaluate_core,
+    # where it can lift a title-based suspicion instead of just not adding one.
+    av = aspect_verdict(detail)
+    if av["state"] == "blocked":
+        return av["reason"]
+    if av["state"] == "clean":
+        # The seller declared it: solid gold, no stones. Stop here, because the blob
+        # check below cannot be trusted once aspects are flattened into it — the aspect
+        # NAME "Main Stone" contains the word "stone", so a listing whose specifics say
+        # "Main Stone: None" reads to a regex as a listing that HAS stones. That is a
+        # false reject on the exact listings we most want, and it leaves no trace.
+        return None
     # Same graded verdict as the title path, deliberately. Running the blunt check here
     # would undo the grading: a chain kept as a suspect because its only other metal was
     # a clasp would be killed by the description mentioning that same clasp again.
@@ -1561,12 +1692,19 @@ def evaluate_deep(item, detail, spot24, cfg):
         for a in (detail.get("localizedAspects") or [])
     )
     blob = f"{title} {aspects} {desc}"
-    if not is_solid_no_stones(blob):
+    _av = aspect_verdict(detail)
+    if _av["state"] == "blocked":
         return None
-    # reject pieces whose item specifics name a second non-gold metal (two-tone
-    # with silver/steel, base metal, etc.) — these inflate the weight with non-gold
-    if has_mixed_metal(aspects):
-        return None
+    # See the note in deep_disqualifies: the aspect NAME "Main Stone" contains "stone",
+    # so a flattened blob makes "Main Stone: None" look like a stone-set piece. When the
+    # specifics have already answered the question, don't re-ask it of the blob.
+    if _av["state"] != "clean":
+        if not is_solid_no_stones(blob):
+            return None
+        # reject pieces whose item specifics name a second non-gold metal (two-tone
+        # with silver/steel, base metal, etc.) — these inflate the weight with non-gold
+        if has_mixed_metal(aspects):
+            return None
     ks = karats_in_text(title) or karats_in_text(aspects)
     karat = min(ks) if ks else (karat_from_text(title) or karat_from_text(aspects))
     if not karat:
@@ -1776,14 +1914,20 @@ def collect(token, queries, spot24, cfg, sort, deep):
 
     if ag_cap and rows:
         # Only worth confirming where the answer could change a decision: unresolved
-        # AG status, not already a trap, and scoring well enough that you'd act on it.
-        floor = int(cfg.get("ag_confirm_min_score", 45))
+        # AG status, not already a trap, and expensive enough that authentication is
+        # even offered. Ordered by MONEY, not score: a $900 chain whose guarantee is
+        # unresolved matters far more than a $60 charm that scores well, and the old
+        # score gate was set above where most real listings land, so almost nothing
+        # ever got confirmed and the whole board sat at "unknown" forever.
+        floor = int(cfg.get("ag_confirm_min_score", 12))
+        ag_floor_price = float(cfg.get("ag_optional_min", 200.0))
         # Gate on melt_score, not score: see the note on melt_score in evaluate_core.
         pend = [r for r in rows
                 if not r.get("ag_confirmed") and not r.get("trap")
                 and r.get("ag_state") in ("unknown", "none")
+                and (r.get("price") or 0) + (r.get("ship") or 0) >= ag_floor_price
                 and (r.get("melt_score") or r.get("score") or 0) >= floor]
-        pend.sort(key=lambda r: -(r.get("melt_score") or r.get("score") or 0))
+        pend.sort(key=lambda r: -((r.get("price") or 0) + (r.get("ship") or 0)))
         if pend:
             print(f"Confirming Authenticity Guarantee on {min(ag_cap, len(pend))} "
                   f"of {len(pend)} unresolved listing(s)")
