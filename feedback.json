@@ -196,5 +196,14 @@
   "verdict": "bad",
   "category": "mixed",
   "ts": 1786736946265
+ },
+ {
+  "id": "v1|147485702687|0",
+  "query": "18k gold omega bracelet grams",
+  "seller": "graywhaleman",
+  "karat": "18K",
+  "verdict": "bad",
+  "category": "mixed",
+  "ts": 1786795921927
  }
 ]
