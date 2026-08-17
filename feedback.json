@@ -268,5 +268,14 @@
   "verdict": "bad",
   "category": "stones",
   "ts": 1786796262286
+ },
+ {
+  "id": "v1|318741958970|0",
+  "query": "gold bracelet grams",
+  "seller": "ct_silver",
+  "karat": "14K",
+  "verdict": "bad",
+  "category": "mixed",
+  "ts": 1786986688667
  }
 ]
